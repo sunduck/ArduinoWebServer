@@ -7,8 +7,11 @@
 #include "WiFiCredentials.h"
 #include "ConfigManager.h"
 
-// Relay pins (active LOW, HIGH = OFF, LOW = ON)
-const int relayPins[8] = {18, 17, 16, 15, 7, 6, 5, 4};
+// 5V Relay pins (active LOW, HIGH = OFF, LOW = ON)
+const int relay5vPins[8] = {18, 17, 16, 15, 7, 6, 5, 4};
+
+// 12V Relay pins (active HIGH, LOW = OFF, HIGH = ON)
+const int relay12vPins[4] = {47, 21, 20, 19};
 
 // Soil sensor analog input pins
 const int soilPins[4]  = {10, 9, 11, 3};
@@ -38,7 +41,34 @@ void setupNTP() {
   Serial0.println("NTP configured");
 }
 
-// Soil moisture task
+// Helper: read soil sensors once
+void readSoilSensors() {
+  // Power ON sensors
+  for (int i = 0; i < 4; i++) {
+    digitalWrite(relay5vPins[i], LOW); // active LOW → ON
+  }
+  delay(500); // stabilization
+
+  // Read with averaging
+  for (int i = 0; i < 4; i++) {
+    long sum = 0;
+    const int samples = 5;
+    for (int j = 0; j < samples; j++) {
+      sum += analogRead(soilPins[i]);
+      delay(50);
+    }
+    int value = sum / samples;
+    lastSoilReadings[i] = value;
+    Serial0.printf("Soil sensor %d (avg of %d): %d\n", i, samples, value);
+  }
+
+  // Power OFF sensors
+  for (int i = 0; i < 4; i++) {
+    digitalWrite(relay5vPins[i], HIGH); // OFF
+  }
+}
+
+// Soil moisture task (periodic readings)
 void soilTask(void *pvParameters) {
   for (;;) {
     time_t now = time(nullptr);
@@ -48,30 +78,7 @@ void soilTask(void *pvParameters) {
     // Run only during light cycle
     if (timeinfo.tm_hour >= config.lightStart && timeinfo.tm_hour < config.lightEnd) {
       if (timeinfo.tm_min % 15 == 0) {
-        // Power ON sensors
-        for (int i = 0; i < 4; i++) {
-          digitalWrite(relayPins[i], LOW); // active LOW → ON
-        }
-        delay(500); // stabilization
-
-        // Read soil sensors with averaging
-        for (int i = 0; i < 4; i++) {
-          long sum = 0;
-          const int samples = 5;
-          for (int j = 0; j < samples; j++) {
-            sum += analogRead(soilPins[i]);
-            delay(50);
-          }
-          int value = sum / samples;
-          lastSoilReadings[i] = value;
-          Serial0.printf("Soil sensor %d (avg of %d): %d\n", i, samples, value);
-        }
-
-        // Power OFF sensors
-        for (int i = 0; i < 4; i++) {
-          digitalWrite(relayPins[i], HIGH); // OFF
-        }
-
+        readSoilSensors();
         vTaskDelay(60000 / portTICK_PERIOD_MS); // wait until next minute
       }
     }
@@ -137,21 +144,53 @@ void setupServer() {
     request->send(200, "application/json", "{\"status\":\"reset\"}");
   });
 
+  // NEW: /sensors endpoint
+  server.on("/sensors", HTTP_GET, [](AsyncWebServerRequest *request) {
+    readSoilSensors();
+
+    JsonDocument doc;
+    JsonArray soil = doc["soilReadings"].to<JsonArray>();
+    for (int i = 0; i < 4; i++) soil.add(lastSoilReadings[i]);
+
+    String json;
+    serializeJson(doc, json);
+    request->send(200, "application/json", json);
+  });
+
   server.begin();
 }
 
 void setup() {
   Serial0.begin(115200);
+
+  // --- Pin initialization first ---
+  // Init all 8 relays on 5V board OFF (active LOW)
+  for (int i = 0; i < 8; i++) {
+    pinMode(relay5vPins[i], OUTPUT);
+    digitalWrite(relay5vPins[i], HIGH); // default OFF
+  }
+  // DEBUG:
+  Serial0.println("[DEBUG] 5V relays initialized (default OFF, active LOW)");
+
+  // Init all 4 relays on 12V board OFF (active HIGH)
+  for (int i = 0; i < 4; i++) {
+    pinMode(relay12vPins[i], OUTPUT);
+    digitalWrite(relay12vPins[i], LOW); // default OFF
+  }
+  // DEBUG:
+  Serial0.println("[DEBUG] 12V relays initialized (default OFF, active HIGH)");
+
+  // Init soil sensor pins as analog inputs
+  for (int i = 0; i < 4; i++) {
+    pinMode(soilPins[i], INPUT);
+  }
+  // DEBUG:
+  Serial0.println("[DEBUG] Soil sensor pins set as INPUT");
+
+  // --- Then continue with system setup ---
   setupWiFi();
   setupNTP();
   config.load();
-
-  // Init all 8 relays OFF
-  for (int i = 0; i < 8; i++) {
-    pinMode(relayPins[i], OUTPUT);
-    digitalWrite(relayPins[i], HIGH); // default OFF
-  }
-
   setupServer();
 
   // Start soil task
