@@ -7,6 +7,7 @@ void ConfigManager::load() {
   mode = preferences.getString("mode", "growing");
   lightStart = preferences.getInt("lightStart", 23);
   lightEnd = preferences.getInt("lightEnd", 17);
+  sensorSettleTime = preferences.getInt("sensorSettleTime", 300); // NEW default 300 ms
 
   wateringTimes.clear();
   for (int i = 0; i < 3; i++) {
@@ -22,6 +23,7 @@ void ConfigManager::save() {
   preferences.putString("mode", mode);
   preferences.putInt("lightStart", lightStart);
   preferences.putInt("lightEnd", lightEnd);
+  preferences.putInt("sensorSettleTime", sensorSettleTime); // NEW
 
   for (size_t i = 0; i < wateringTimes.size(); i++) {
     String key = "wt" + String(i);

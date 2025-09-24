@@ -22,15 +22,43 @@ int lastSoilReadings[4] = {0, 0, 0, 0};
 AsyncWebServer server(80);
 ConfigManager config;
 
+// --- Logging helpers ---
+String getTimestamp() {
+  time_t now = time(nullptr);
+  struct tm timeinfo;
+  localtime_r(&now, &timeinfo);
+
+  char buf[25];
+  strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &timeinfo);
+  return String(buf);
+}
+
+void logDebug(const String &msg) {
+  Serial0.print("[");
+  Serial0.print(getTimestamp());
+  Serial0.print("] ");
+  Serial0.println(msg);
+}
+
+// --- WiFi + NTP setup ---
 void setupWiFi() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   Serial0.print("Connecting to WiFi");
+  unsigned long startAttempt = millis();
+
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial0.print(".");
+
+    // If > 30s without WiFi, reboot
+    if (millis() - startAttempt > 30000) {
+      Serial0.println("\n[ERROR] WiFi connection failed, rebooting...");
+      ESP.restart();
+    }
   }
+
   Serial0.println();
   Serial0.print("Connected! IP: ");
   Serial0.println(WiFi.localIP());
@@ -38,54 +66,68 @@ void setupWiFi() {
 
 void setupNTP() {
   configTime(3 * 3600, 0, "pool.ntp.org", "time.nist.gov"); // MSK-3
-  Serial0.println("NTP configured");
+
+  struct tm timeinfo;
+  Serial0.print("Syncing time via NTP");
+  unsigned long startAttempt = millis();
+
+  while (!getLocalTime(&timeinfo)) {
+    delay(500);
+    Serial0.print(".");
+
+    // If > 30s without time sync, reboot
+    if (millis() - startAttempt > 30000) {
+      Serial0.println("\n[ERROR] NTP sync failed, rebooting...");
+      ESP.restart();
+    }
+  }
+
+  Serial0.println();
+  Serial0.println("NTP time synced successfully");
+  logDebug("NTP sync successful, timestamped logging enabled");
 }
 
-// Helper: read soil sensors once
+// --- Soil sensors ---
 void readSoilSensors() {
-  // Power ON sensors
-  for (int i = 0; i < 4; i++) {
-    digitalWrite(relay5vPins[i], LOW); // active LOW → ON
-  }
-  delay(500); // stabilization
+  const int samples = 5;
 
-  // Read with averaging
   for (int i = 0; i < 4; i++) {
+    // Power ON current sensor
+    digitalWrite(relay5vPins[i], LOW); // active LOW → ON
+    delay(config.sensorSettleTime);    // configurable stabilization
+
+    // Read with averaging
     long sum = 0;
-    const int samples = 5;
     for (int j = 0; j < samples; j++) {
       sum += analogRead(soilPins[i]);
       delay(50);
     }
     int value = sum / samples;
     lastSoilReadings[i] = value;
-    Serial0.printf("Soil sensor %d (avg of %d): %d\n", i, samples, value);
-  }
+    logDebug("Soil sensor " + String(i) + ": " + String(value));
 
-  // Power OFF sensors
-  for (int i = 0; i < 4; i++) {
+    // Power OFF current sensor
     digitalWrite(relay5vPins[i], HIGH); // OFF
   }
 }
 
-// Soil moisture task (periodic readings)
 void soilTask(void *pvParameters) {
   for (;;) {
     time_t now = time(nullptr);
     struct tm timeinfo;
     localtime_r(&now, &timeinfo);
 
-    // Run only during light cycle
     if (timeinfo.tm_hour >= config.lightStart && timeinfo.tm_hour < config.lightEnd) {
       if (timeinfo.tm_min % 15 == 0) {
         readSoilSensors();
-        vTaskDelay(60000 / portTICK_PERIOD_MS); // wait until next minute
+        vTaskDelay(60000 / portTICK_PERIOD_MS);
       }
     }
     vTaskDelay(1000 / portTICK_PERIOD_MS);
   }
 }
 
+// --- Web server ---
 void setupServer() {
   server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request) {
     JsonDocument doc;
@@ -94,12 +136,11 @@ void setupServer() {
     doc["mode"] = config.mode;
     doc["lightStart"] = config.lightStart;
     doc["lightEnd"]   = config.lightEnd;
+    doc["sensorSettleTime"] = config.sensorSettleTime;
 
-    // Watering times
     JsonArray arr = doc["wateringTimes"].to<JsonArray>();
     for (auto &t : config.wateringTimes) arr.add(t);
 
-    // Soil readings
     JsonArray soil = doc["soilReadings"].to<JsonArray>();
     for (int i = 0; i < 4; i++) soil.add(lastSoilReadings[i]);
 
@@ -117,21 +158,15 @@ void setupServer() {
         return;
       }
 
-      if (doc["mode"].is<String>()) {
-        config.mode = doc["mode"].as<String>();
-      }
-      if (doc["lightStart"].is<int>()) {
-        config.lightStart = doc["lightStart"].as<int>();
-      }
-      if (doc["lightEnd"].is<int>()) {
-        config.lightEnd = doc["lightEnd"].as<int>();
-      }
+      if (doc["mode"].is<String>()) config.mode = doc["mode"].as<String>();
+      if (doc["lightStart"].is<int>()) config.lightStart = doc["lightStart"].as<int>();
+      if (doc["lightEnd"].is<int>()) config.lightEnd = doc["lightEnd"].as<int>();
+      if (doc["sensorSettleTime"].is<int>()) config.sensorSettleTime = doc["sensorSettleTime"].as<int>();
+
       if (doc["wateringTimes"].is<JsonArray>()) {
         config.wateringTimes.clear();
         for (JsonVariant v : doc["wateringTimes"].as<JsonArray>()) {
-          if (v.is<String>()) {
-            config.wateringTimes.push_back(v.as<String>());
-          }
+          if (v.is<String>()) config.wateringTimes.push_back(v.as<String>());
         }
       }
 
@@ -144,10 +179,8 @@ void setupServer() {
     request->send(200, "application/json", "{\"status\":\"reset\"}");
   });
 
-  // NEW: /sensors endpoint
   server.on("/sensors", HTTP_GET, [](AsyncWebServerRequest *request) {
     readSoilSensors();
-
     JsonDocument doc;
     JsonArray soil = doc["soilReadings"].to<JsonArray>();
     for (int i = 0; i < 4; i++) soil.add(lastSoilReadings[i]);
@@ -158,36 +191,32 @@ void setupServer() {
   });
 
   server.begin();
+  logDebug("Web server started");
 }
 
+// --- Setup + loop ---
 void setup() {
   Serial0.begin(115200);
 
-  // --- Pin initialization first ---
-  // Init all 8 relays on 5V board OFF (active LOW)
+  // Pin initialization first
   for (int i = 0; i < 8; i++) {
     pinMode(relay5vPins[i], OUTPUT);
-    digitalWrite(relay5vPins[i], HIGH); // default OFF
+    digitalWrite(relay5vPins[i], HIGH);
   }
-  // DEBUG:
   Serial0.println("[DEBUG] 5V relays initialized (default OFF, active LOW)");
 
-  // Init all 4 relays on 12V board OFF (active HIGH)
   for (int i = 0; i < 4; i++) {
     pinMode(relay12vPins[i], OUTPUT);
-    digitalWrite(relay12vPins[i], LOW); // default OFF
+    digitalWrite(relay12vPins[i], LOW);
   }
-  // DEBUG:
   Serial0.println("[DEBUG] 12V relays initialized (default OFF, active HIGH)");
 
-  // Init soil sensor pins as analog inputs
   for (int i = 0; i < 4; i++) {
     pinMode(soilPins[i], INPUT);
   }
-  // DEBUG:
   Serial0.println("[DEBUG] Soil sensor pins set as INPUT");
 
-  // --- Then continue with system setup ---
+  // System setup
   setupWiFi();
   setupNTP();
   config.load();
@@ -198,5 +227,5 @@ void setup() {
 }
 
 void loop() {
-  // Nothing here, tasks + server handle everything
+  // Nothing here
 }

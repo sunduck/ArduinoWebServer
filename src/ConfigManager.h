@@ -8,6 +8,7 @@ public:
   String mode;
   int lightStart;
   int lightEnd;
+  int sensorSettleTime;              // NEW: delay for soil sensor stabilization (ms)
   std::vector<String> wateringTimes;
 
   void load();
