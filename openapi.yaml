@@ -1,7 +1,7 @@
 openapi: 3.0.0
 info:
   title: ESP32 Garden Controller API
-  version: 1.0.0
+  version: 1.2.0
   description: >
     REST API for ESP32-based garden controller with soil sensors and relay boards.
 
@@ -16,54 +16,34 @@ paths:
   /status:
     get:
       summary: Get device status
-      description: >
-        Returns WiFi info, configuration, watering times, and last soil sensor readings.
       responses:
         '200':
-          description: JSON object with status info
+          description: Device status
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  wifi:
-                    type: string
-                    example: MyWiFi
-                  ip:
-                    type: string
-                    example: 192.168.1.50
-                  mode:
-                    type: string
-                    example: growing
-                  lightStart:
-                    type: integer
-                    example: 8
-                  lightEnd:
-                    type: integer
-                    example: 20
-                  sensorSettleTime:
-                    type: integer
-                    example: 300
+                  wifi: { type: string, example: MyWiFi }
+                  ip: { type: string, example: 192.168.1.50 }
+                  mode: { type: string, example: growing }
+                  lightStart: { type: integer, example: 23 }
+                  lightEnd: { type: integer, example: 17 }
+                  sensorSettleTime: { type: integer, example: 300 }
                   wateringTimes:
                     type: array
-                    items:
-                      type: string
-                      example: "08:00"
+                    items: { type: string, example: "08:00" }
                   soilReadings:
                     type: array
-                    items:
-                      type: integer
+                    items: { type: integer }
                     example: [2400, 2500, 2300, 2450]
 
   /sensors:
     get:
-      summary: Read soil sensors
-      description: >
-        Powers soil sensors ON one by one, reads current values, powers them OFF again,
-        and returns fresh raw ADC readings.
+      summary: Read soil sensors immediately
       responses:
         '200':
-          description: JSON object with soil readings
+          description: Fresh soil readings
           content:
             application/json:
               schema:
@@ -71,15 +51,37 @@ paths:
                 properties:
                   soilReadings:
                     type: array
-                    items:
-                      type: integer
+                    items: { type: integer }
                     example: [2450, 2100, 2800, 2600]
+
+  /sensors/history:
+    get:
+      summary: Get soil sensor history
+      description: >
+        Returns all soil readings from the **current light cycle** only.
+        Logs reset automatically at lightStart.
+      responses:
+        '200':
+          description: Soil sensor log history
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    timestamp:
+                      type: string
+                      format: date-time
+                      example: "2025-09-26 03:15:00"
+                    values:
+                      type: array
+                      items: { type: integer }
+                      example: [2400, 2500, 2300, 2450]
 
   /config:
     post:
       summary: Update configuration
-      description: >
-        Accepts a JSON object to update device configuration (mode, light cycle, watering times, sensor settle time).
       requestBody:
         required: true
         content:
@@ -87,58 +89,35 @@ paths:
             schema:
               type: object
               properties:
-                mode:
-                  type: string
-                  example: growing
-                lightStart:
-                  type: integer
-                  example: 8
-                lightEnd:
-                  type: integer
-                  example: 20
-                sensorSettleTime:
-                  type: integer
-                  example: 400
+                mode: { type: string, example: growing }
+                lightStart: { type: integer, example: 23 }
+                lightEnd: { type: integer, example: 17 }
+                sensorSettleTime: { type: integer, example: 400 }
                 wateringTimes:
                   type: array
-                  items:
-                    type: string
+                  items: { type: string }
                   example: ["08:00", "20:00"]
       responses:
         '200':
-          description: Status OK
+          description: Config updated
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  status:
-                    type: string
-                    example: ok
+                  status: { type: string, example: ok }
         '400':
           description: Invalid JSON
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                    example: Invalid JSON
 
   /reset:
     post:
       summary: Reset configuration
-      description: >
-        Clears saved configuration and resets to defaults.
       responses:
         '200':
-          description: Reset confirmation
+          description: Reset done
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  status:
-                    type: string
-                    example: reset
+                  status: { type: string, example: reset }

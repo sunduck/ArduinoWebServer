@@ -7,17 +7,37 @@
 #include "WiFiCredentials.h"
 #include "ConfigManager.h"
 
-// 5V Relay pins (active LOW, HIGH = OFF, LOW = ON)
+// ===============================================================
+// ESP32 Garden Controller
+// Hardware: ESP32-S3-N16R8
+// Features:
+//   - 8x 5V relays (active LOW) → general control (soil sensors power, etc.)
+//   - 4x 12V relays (active HIGH) → extra devices
+//   - 4x Soil humidity sensors (analog inputs)
+//   - WiFi + NTP required for operation
+//   - REST API via AsyncWebServer
+//   - ConfigManager stores config (mode, light cycle, watering times, settle time)
+//   - Soil readings every 15 minutes during light cycle
+//   - SoilLog history reset at each lightStart
+// ===============================================================
+
+// --- Pin assignments ---
 const int relay5vPins[8] = {18, 17, 16, 15, 7, 6, 5, 4};
-
-// 12V Relay pins (active HIGH, LOW = OFF, HIGH = ON)
 const int relay12vPins[4] = {47, 21, 20, 19};
-
-// Soil sensor analog input pins
 const int soilPins[4]  = {10, 9, 11, 3};
 
-// Store last soil readings
+// --- Globals ---
 int lastSoilReadings[4] = {0, 0, 0, 0};
+
+struct SoilLog {
+  time_t timestamp;
+  int values[4];
+};
+
+const int MAX_LOGS = 500;
+SoilLog soilLogs[MAX_LOGS];
+int logIndex = 0;
+int logCount = 0;
 
 AsyncWebServer server(80);
 ConfigManager config;
@@ -40,7 +60,26 @@ void logDebug(const String &msg) {
   Serial0.println(msg);
 }
 
-// --- WiFi + NTP setup ---
+// --- Soil log helpers ---
+void addSoilLog() {
+  SoilLog entry;
+  entry.timestamp = time(nullptr);
+  for (int i = 0; i < 4; i++) entry.values[i] = lastSoilReadings[i];
+
+  soilLogs[logIndex] = entry;
+  logIndex = (logIndex + 1) % MAX_LOGS;
+  if (logCount < MAX_LOGS) logCount++;
+
+  logDebug("Soil log added");
+}
+
+void resetSoilLogs() {
+  logIndex = 0;
+  logCount = 0;
+  logDebug("Soil log reset at lightStart");
+}
+
+// --- WiFi + NTP ---
 void setupWiFi() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -51,8 +90,6 @@ void setupWiFi() {
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial0.print(".");
-
-    // If > 30s without WiFi, reboot
     if (millis() - startAttempt > 30000) {
       Serial0.println("\n[ERROR] WiFi connection failed, rebooting...");
       ESP.restart();
@@ -74,8 +111,6 @@ void setupNTP() {
   while (!getLocalTime(&timeinfo)) {
     delay(500);
     Serial0.print(".");
-
-    // If > 30s without time sync, reboot
     if (millis() - startAttempt > 30000) {
       Serial0.println("\n[ERROR] NTP sync failed, rebooting...");
       ESP.restart();
@@ -90,13 +125,10 @@ void setupNTP() {
 // --- Soil sensors ---
 void readSoilSensors() {
   const int samples = 5;
-
   for (int i = 0; i < 4; i++) {
-    // Power ON current sensor
-    digitalWrite(relay5vPins[i], LOW); // active LOW → ON
-    delay(config.sensorSettleTime);    // configurable stabilization
+    digitalWrite(relay5vPins[i], LOW); // ON
+    delay(config.sensorSettleTime);
 
-    // Read with averaging
     long sum = 0;
     for (int j = 0; j < samples; j++) {
       sum += analogRead(soilPins[i]);
@@ -106,23 +138,40 @@ void readSoilSensors() {
     lastSoilReadings[i] = value;
     logDebug("Soil sensor " + String(i) + ": " + String(value));
 
-    // Power OFF current sensor
     digitalWrite(relay5vPins[i], HIGH); // OFF
   }
 }
 
+// --- Soil task ---
 void soilTask(void *pvParameters) {
+  int lastHour = -1;
+
   for (;;) {
     time_t now = time(nullptr);
     struct tm timeinfo;
     localtime_r(&now, &timeinfo);
 
-    if (timeinfo.tm_hour >= config.lightStart && timeinfo.tm_hour < config.lightEnd) {
-      if (timeinfo.tm_min % 15 == 0) {
-        readSoilSensors();
-        vTaskDelay(60000 / portTICK_PERIOD_MS);
-      }
+    // Reset logs at start of light cycle
+    if (timeinfo.tm_hour == config.lightStart && timeinfo.tm_hour != lastHour) {
+      resetSoilLogs();
     }
+    lastHour = timeinfo.tm_hour;
+
+    // Check if inside light cycle
+    bool inLightCycle;
+    if (config.lightStart < config.lightEnd) {
+      inLightCycle = (timeinfo.tm_hour >= config.lightStart && timeinfo.tm_hour < config.lightEnd);
+    } else {
+      inLightCycle = (timeinfo.tm_hour >= config.lightStart || timeinfo.tm_hour < config.lightEnd);
+    }
+
+    // Every 15 minutes
+    if (inLightCycle && (timeinfo.tm_min % 15 == 0)) {
+      readSoilSensors();
+      addSoilLog();
+      vTaskDelay(60000 / portTICK_PERIOD_MS);
+    }
+
     vTaskDelay(1000 / portTICK_PERIOD_MS);
   }
 }
@@ -179,8 +228,38 @@ void setupServer() {
     request->send(200, "application/json", "{\"status\":\"reset\"}");
   });
 
+  // Register history BEFORE sensors
+  server.on("/sensors/history", HTTP_GET, [](AsyncWebServerRequest *request) {
+    JsonDocument doc;
+    JsonArray arr = doc.to<JsonArray>();
+
+    int idx = logIndex;
+    for (int i = 0; i < logCount; i++) {
+      idx = (idx - 1 + MAX_LOGS) % MAX_LOGS;
+      SoilLog &entry = soilLogs[idx];
+
+      JsonObject obj = arr.add<JsonObject>();
+
+      // Human-readable timestamp
+      char buf[25];
+      struct tm timeinfo;
+      localtime_r(&entry.timestamp, &timeinfo);
+      strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &timeinfo);
+      obj["timestamp"] = buf;
+
+      JsonArray vals = obj["values"].to<JsonArray>();
+      for (int j = 0; j < 4; j++) vals.add(entry.values[j]);
+    }
+
+    String json;
+    serializeJson(doc, json);
+    request->send(200, "application/json", json);
+  });
+
   server.on("/sensors", HTTP_GET, [](AsyncWebServerRequest *request) {
     readSoilSensors();
+    addSoilLog();
+
     JsonDocument doc;
     JsonArray soil = doc["soilReadings"].to<JsonArray>();
     for (int i = 0; i < 4; i++) soil.add(lastSoilReadings[i]);
@@ -198,7 +277,6 @@ void setupServer() {
 void setup() {
   Serial0.begin(115200);
 
-  // Pin initialization first
   for (int i = 0; i < 8; i++) {
     pinMode(relay5vPins[i], OUTPUT);
     digitalWrite(relay5vPins[i], HIGH);
@@ -216,16 +294,12 @@ void setup() {
   }
   Serial0.println("[DEBUG] Soil sensor pins set as INPUT");
 
-  // System setup
   setupWiFi();
   setupNTP();
   config.load();
   setupServer();
 
-  // Start soil task
   xTaskCreatePinnedToCore(soilTask, "SoilTask", 4096, NULL, 1, NULL, 1);
 }
 
-void loop() {
-  // Nothing here
-}
+void loop() {}
