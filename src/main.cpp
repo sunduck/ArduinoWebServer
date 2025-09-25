@@ -6,25 +6,36 @@
 #include <time.h>
 #include "WiFiCredentials.h"
 #include "ConfigManager.h"
+#include "FS.h"
+#include "SD.h"
+#include "SPI.h"
 
 // ===============================================================
 // ESP32 Garden Controller
 // Hardware: ESP32-S3-N16R8
 // Features:
-//   - 8x 5V relays (active LOW) → general control (soil sensors power, etc.)
-//   - 4x 12V relays (active HIGH) → extra devices
+//   - 8x 5V relays (active LOW)
+//   - 4x 12V relays (active HIGH)
 //   - 4x Soil humidity sensors (analog inputs)
 //   - WiFi + NTP required for operation
+//   - SD card for logs, templates, static files
 //   - REST API via AsyncWebServer
-//   - ConfigManager stores config (mode, light cycle, watering times, settle time)
+//   - ConfigManager stores config
 //   - Soil readings every 15 minutes during light cycle
-//   - SoilLog history reset at each lightStart
+//   - SoilLog history reset at each lightStart, dumped to SD
 // ===============================================================
 
-// --- Pin assignments ---
+// --- Relay & sensor pins ---
 const int relay5vPins[8] = {18, 17, 16, 15, 7, 6, 5, 4};
 const int relay12vPins[4] = {47, 21, 20, 19};
-const int soilPins[4]  = {10, 9, 11, 3};
+const int soilPins[4]     = {10, 9, 11, 3};
+
+// --- MicroSD SPI pins ---
+#define SD_SCK   42
+#define SD_MISO  1
+#define SD_MOSI  2
+#define SD_CS    41
+SPIClass spi(HSPI);
 
 // --- Globals ---
 int lastSoilReadings[4] = {0, 0, 0, 0};
@@ -79,6 +90,53 @@ void resetSoilLogs() {
   logDebug("Soil log reset at lightStart");
 }
 
+// --- SD log dump ---
+void dumpSoilLogsToSD() {
+  if (logCount == 0) return;
+
+  // Filename by date
+  time_t now = time(nullptr);
+  struct tm timeinfo;
+  localtime_r(&now, &timeinfo);
+
+  char filename[32];
+  strftime(filename, sizeof(filename), "/soil_%Y-%m-%d.json", &timeinfo);
+
+  File file = SD.open(filename, FILE_WRITE);
+  if (!file) {
+    logDebug("Failed to open log file for writing");
+    return;
+  }
+
+  JsonDocument doc;
+  doc["date"] = getTimestamp().substring(0, 10);
+  JsonArray arr = doc["readings"].to<JsonArray>();
+
+  int idx = logIndex;
+  for (int i = 0; i < logCount; i++) {
+    idx = (idx - 1 + MAX_LOGS) % MAX_LOGS;
+    SoilLog &entry = soilLogs[idx];
+
+    JsonObject obj = arr.add<JsonObject>();
+    char buf[25];
+    struct tm entryTime;
+    localtime_r(&entry.timestamp, &entryTime);
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &entryTime);
+    obj["timestamp"] = buf;
+
+    JsonArray vals = obj["values"].to<JsonArray>();
+    for (int j = 0; j < 4; j++) vals.add(entry.values[j]);
+  }
+
+  if (serializeJsonPretty(doc, file) == 0) {
+    logDebug("Failed to write JSON log to file");
+  } else {
+    logDebug("Soil logs dumped to " + String(filename));
+  }
+
+  file.close();
+}
+
 // --- WiFi + NTP ---
 void setupWiFi() {
   WiFi.mode(WIFI_STA);
@@ -122,6 +180,45 @@ void setupNTP() {
   logDebug("NTP sync successful, timestamped logging enabled");
 }
 
+// --- SD card ---
+void setupSD() {
+  spi.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+
+  Serial0.print("Mounting SD card");
+  bool mounted = false;
+
+  for (int attempt = 0; attempt < 20; attempt++) { // ~10s max
+    if (SD.begin(SD_CS, spi, 80000000)) {
+      mounted = true;
+      break;
+    }
+    delay(500);
+    Serial0.print(".");
+  }
+
+  if (!mounted) {
+    Serial0.println("\n[ERROR] SD card mount failed, rebooting...");
+    ESP.restart();
+  }
+
+  uint8_t cardType = SD.cardType();
+  if (cardType == CARD_NONE) {
+    Serial0.println("\n[ERROR] No SD card attached, rebooting...");
+    ESP.restart();
+  }
+
+  Serial0.print("\n[DEBUG] SD Card type: ");
+  switch (cardType) {
+    case CARD_MMC:  Serial0.print("MMC"); break;
+    case CARD_SD:   Serial0.print("SDSC"); break;
+    case CARD_SDHC: Serial0.print("SDHC"); break;
+    default:        Serial0.print("UNKNOWN"); break;
+  }
+
+  uint64_t cardSize = SD.cardSize() / (1024 * 1024);
+  Serial0.printf(", Size: %llu MB\n", cardSize);
+}
+
 // --- Soil sensors ---
 void readSoilSensors() {
   const int samples = 5;
@@ -153,6 +250,7 @@ void soilTask(void *pvParameters) {
 
     // Reset logs at start of light cycle
     if (timeinfo.tm_hour == config.lightStart && timeinfo.tm_hour != lastHour) {
+      dumpSoilLogsToSD();   // dump before reset
       resetSoilLogs();
     }
     lastHour = timeinfo.tm_hour;
@@ -174,6 +272,34 @@ void soilTask(void *pvParameters) {
 
     vTaskDelay(1000 / portTICK_PERIOD_MS);
   }
+}
+
+// --- Archive helper ---
+JsonArray listSoilFiles(JsonDocument &doc) {
+  File root = SD.open("/");
+  JsonArray arr = doc.to<JsonArray>();
+
+  if (!root || !root.isDirectory()) {
+    return arr;
+  }
+
+  std::vector<String> files;
+  File file = root.openNextFile();
+  while (file) {
+    String name = file.name();
+    if (name.startsWith("/soil_") && name.endsWith(".json")) {
+      files.push_back(name);
+    }
+    file = root.openNextFile();
+  }
+
+  std::sort(files.begin(), files.end(), std::greater<String>());
+
+  for (auto &f : files) {
+    arr.add(f);
+  }
+
+  return arr;
 }
 
 // --- Web server ---
@@ -228,7 +354,7 @@ void setupServer() {
     request->send(200, "application/json", "{\"status\":\"reset\"}");
   });
 
-  // Register history BEFORE sensors
+  // History BEFORE sensors
   server.on("/sensors/history", HTTP_GET, [](AsyncWebServerRequest *request) {
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
@@ -240,7 +366,6 @@ void setupServer() {
 
       JsonObject obj = arr.add<JsonObject>();
 
-      // Human-readable timestamp
       char buf[25];
       struct tm timeinfo;
       localtime_r(&entry.timestamp, &timeinfo);
@@ -266,6 +391,38 @@ void setupServer() {
 
     String json;
     serializeJson(doc, json);
+    request->send(200, "application/json", json);
+  });
+
+  // Archive endpoint
+  server.on("/sensors/archive", HTTP_GET, [](AsyncWebServerRequest *request) {
+    if (request->hasParam("file")) {
+      String filename = request->getParam("file")->value();
+      if (!SD.exists(filename)) {
+        request->send(404, "application/json", "{\"error\":\"File not found\"}");
+        return;
+      }
+      request->send(SD, filename, "application/json");
+      return;
+    }
+
+    if (request->hasParam("date")) {
+      String date = request->getParam("date")->value();
+      String filename = "/soil_" + date + ".json";
+
+      if (!SD.exists(filename)) {
+        request->send(404, "application/json", "{\"error\":\"File not found\"}");
+        return;
+      }
+      request->send(SD, filename, "application/json");
+      return;
+    }
+
+    JsonDocument doc;
+    JsonArray arr = listSoilFiles(doc);
+
+    String json;
+    serializeJson(arr, json);
     request->send(200, "application/json", json);
   });
 
@@ -297,6 +454,7 @@ void setup() {
   setupWiFi();
   setupNTP();
   config.load();
+  setupSD();
   setupServer();
 
   xTaskCreatePinnedToCore(soilTask, "SoilTask", 4096, NULL, 1, NULL, 1);
