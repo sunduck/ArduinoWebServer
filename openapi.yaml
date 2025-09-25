@@ -1,83 +1,52 @@
-openapi: 3.0.0
+openapi: 3.0.3
 info:
   title: ESP32 Garden Controller API
-  version: 1.2.0
-  description: >
-    REST API for ESP32-based garden controller with soil sensors and relay boards.
+  version: 1.1.0
+  description: |
+    REST API for ESP32-S3 garden controller.
+    Provides system status, configuration, sensor readings,
+    and archived soil logs stored on SD card.
 
 servers:
-  - url: http://{device_ip}
+  - url: http://{host}:{port}
     variables:
-      device_ip:
-        default: 192.168.1.50
-        description: IP address of the ESP32 device
+      host:
+        default: esp32.local
+      port:
+        default: "80"
 
 paths:
   /status:
     get:
-      summary: Get device status
+      summary: Get system status
       responses:
-        '200':
-          description: Device status
+        "200":
+          description: Current system status
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  wifi: { type: string, example: MyWiFi }
-                  ip: { type: string, example: 192.168.1.50 }
-                  mode: { type: string, example: growing }
-                  lightStart: { type: integer, example: 23 }
-                  lightEnd: { type: integer, example: 17 }
-                  sensorSettleTime: { type: integer, example: 300 }
+                  wifi:
+                    type: string
+                  ip:
+                    type: string
+                  mode:
+                    type: string
+                  lightStart:
+                    type: integer
+                  lightEnd:
+                    type: integer
+                  sensorSettleTime:
+                    type: integer
                   wateringTimes:
                     type: array
-                    items: { type: string, example: "08:00" }
-                  soilReadings:
-                    type: array
-                    items: { type: integer }
-                    example: [2400, 2500, 2300, 2450]
-
-  /sensors:
-    get:
-      summary: Read soil sensors immediately
-      responses:
-        '200':
-          description: Fresh soil readings
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  soilReadings:
-                    type: array
-                    items: { type: integer }
-                    example: [2450, 2100, 2800, 2600]
-
-  /sensors/history:
-    get:
-      summary: Get soil sensor history
-      description: >
-        Returns all soil readings from the **current light cycle** only.
-        Logs reset automatically at lightStart.
-      responses:
-        '200':
-          description: Soil sensor log history
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  type: object
-                  properties:
-                    timestamp:
+                    items:
                       type: string
-                      format: date-time
-                      example: "2025-09-26 03:15:00"
-                    values:
-                      type: array
-                      items: { type: integer }
-                      example: [2400, 2500, 2300, 2450]
+                  soilReadings:
+                    type: array
+                    items:
+                      type: integer
 
   /config:
     post:
@@ -89,35 +58,125 @@ paths:
             schema:
               type: object
               properties:
-                mode: { type: string, example: growing }
-                lightStart: { type: integer, example: 23 }
-                lightEnd: { type: integer, example: 17 }
-                sensorSettleTime: { type: integer, example: 400 }
+                mode:
+                  type: string
+                lightStart:
+                  type: integer
+                lightEnd:
+                  type: integer
+                sensorSettleTime:
+                  type: integer
                 wateringTimes:
                   type: array
-                  items: { type: string }
-                  example: ["08:00", "20:00"]
+                  items:
+                    type: string
       responses:
-        '200':
-          description: Config updated
+        "200":
+          description: Configuration updated
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  status: { type: string, example: ok }
-        '400':
-          description: Invalid JSON
+                  status:
+                    type: string
 
   /reset:
     post:
-      summary: Reset configuration
+      summary: Reset configuration to defaults
       responses:
-        '200':
-          description: Reset done
+        "200":
+          description: Config reset
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  status: { type: string, example: reset }
+                  status:
+                    type: string
+
+  /sensors:
+    get:
+      summary: Read soil sensors immediately
+      responses:
+        "200":
+          description: Current soil readings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  soilReadings:
+                    type: array
+                    items:
+                      type: integer
+
+  /sensors/history:
+    get:
+      summary: Get soil sensor history for current light cycle
+      responses:
+        "200":
+          description: History of soil readings
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    timestamp:
+                      type: string
+                      format: date-time
+                    values:
+                      type: array
+                      items:
+                        type: integer
+
+  /sensors/archive:
+    get:
+      summary: List or fetch archived soil log files from SD card
+      parameters:
+        - name: file
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Exact filename to fetch (e.g. `/soil_2025-09-26.json`)
+        - name: date
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: Date to fetch (e.g. `2025-09-26`)
+      responses:
+        "200":
+          description: |
+            - If no query: JSON array of available files (newest first)  
+            - If file/date given: JSON log file contents
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: array
+                    items:
+                      type: string
+                  - type: object
+                    properties:
+                      date:
+                        type: string
+                        format: date
+                      readings:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            timestamp:
+                              type: string
+                              format: date-time
+                            values:
+                              type: array
+                              items:
+                                type: integer
+        "404":
+          description: File not found

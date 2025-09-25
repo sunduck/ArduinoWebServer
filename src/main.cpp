@@ -6,23 +6,12 @@
 #include <time.h>
 #include "WiFiCredentials.h"
 #include "ConfigManager.h"
-#include "FS.h"
-#include "SD.h"
-#include "SPI.h"
+#include "SDManager.h"
+#include "SoilLogManager.h"
 
 // ===============================================================
 // ESP32 Garden Controller
 // Hardware: ESP32-S3-N16R8
-// Features:
-//   - 8x 5V relays (active LOW)
-//   - 4x 12V relays (active HIGH)
-//   - 4x Soil humidity sensors (analog inputs)
-//   - WiFi + NTP required for operation
-//   - SD card for logs, templates, static files
-//   - REST API via AsyncWebServer
-//   - ConfigManager stores config
-//   - Soil readings every 15 minutes during light cycle
-//   - SoilLog history reset at each lightStart, dumped to SD
 // ===============================================================
 
 // --- Relay & sensor pins ---
@@ -30,28 +19,11 @@ const int relay5vPins[8] = {18, 17, 16, 15, 7, 6, 5, 4};
 const int relay12vPins[4] = {47, 21, 20, 19};
 const int soilPins[4]     = {10, 9, 11, 3};
 
-// --- MicroSD SPI pins ---
-#define SD_SCK   42
-#define SD_MISO  1
-#define SD_MOSI  2
-#define SD_CS    41
-SPIClass spi(HSPI);
-
 // --- Globals ---
 int lastSoilReadings[4] = {0, 0, 0, 0};
-
-struct SoilLog {
-  time_t timestamp;
-  int values[4];
-};
-
-const int MAX_LOGS = 500;
-SoilLog soilLogs[MAX_LOGS];
-int logIndex = 0;
-int logCount = 0;
-
 AsyncWebServer server(80);
 ConfigManager config;
+volatile bool pumpActive = false;  // guard: only one watering at a time
 
 // --- Logging helpers ---
 String getTimestamp() {
@@ -69,72 +41,6 @@ void logDebug(const String &msg) {
   Serial0.print(getTimestamp());
   Serial0.print("] ");
   Serial0.println(msg);
-}
-
-// --- Soil log helpers ---
-void addSoilLog() {
-  SoilLog entry;
-  entry.timestamp = time(nullptr);
-  for (int i = 0; i < 4; i++) entry.values[i] = lastSoilReadings[i];
-
-  soilLogs[logIndex] = entry;
-  logIndex = (logIndex + 1) % MAX_LOGS;
-  if (logCount < MAX_LOGS) logCount++;
-
-  logDebug("Soil log added");
-}
-
-void resetSoilLogs() {
-  logIndex = 0;
-  logCount = 0;
-  logDebug("Soil log reset at lightStart");
-}
-
-// --- SD log dump ---
-void dumpSoilLogsToSD() {
-  if (logCount == 0) return;
-
-  // Filename by date
-  time_t now = time(nullptr);
-  struct tm timeinfo;
-  localtime_r(&now, &timeinfo);
-
-  char filename[32];
-  strftime(filename, sizeof(filename), "/soil_%Y-%m-%d.json", &timeinfo);
-
-  File file = SD.open(filename, FILE_WRITE);
-  if (!file) {
-    logDebug("Failed to open log file for writing");
-    return;
-  }
-
-  JsonDocument doc;
-  doc["date"] = getTimestamp().substring(0, 10);
-  JsonArray arr = doc["readings"].to<JsonArray>();
-
-  int idx = logIndex;
-  for (int i = 0; i < logCount; i++) {
-    idx = (idx - 1 + MAX_LOGS) % MAX_LOGS;
-    SoilLog &entry = soilLogs[idx];
-
-    JsonObject obj = arr.add<JsonObject>();
-    char buf[25];
-    struct tm entryTime;
-    localtime_r(&entry.timestamp, &entryTime);
-    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &entryTime);
-    obj["timestamp"] = buf;
-
-    JsonArray vals = obj["values"].to<JsonArray>();
-    for (int j = 0; j < 4; j++) vals.add(entry.values[j]);
-  }
-
-  if (serializeJsonPretty(doc, file) == 0) {
-    logDebug("Failed to write JSON log to file");
-  } else {
-    logDebug("Soil logs dumped to " + String(filename));
-  }
-
-  file.close();
 }
 
 // --- WiFi + NTP ---
@@ -160,7 +66,7 @@ void setupWiFi() {
 }
 
 void setupNTP() {
-  configTime(3 * 3600, 0, "pool.ntp.org", "time.nist.gov"); // MSK-3
+  configTime(3 * 3600, 0, "pool.ntp.org", "time.nist.gov");
 
   struct tm timeinfo;
   Serial0.print("Syncing time via NTP");
@@ -178,45 +84,6 @@ void setupNTP() {
   Serial0.println();
   Serial0.println("NTP time synced successfully");
   logDebug("NTP sync successful, timestamped logging enabled");
-}
-
-// --- SD card ---
-void setupSD() {
-  spi.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
-
-  Serial0.print("Mounting SD card");
-  bool mounted = false;
-
-  for (int attempt = 0; attempt < 20; attempt++) { // ~10s max
-    if (SD.begin(SD_CS, spi, 80000000)) {
-      mounted = true;
-      break;
-    }
-    delay(500);
-    Serial0.print(".");
-  }
-
-  if (!mounted) {
-    Serial0.println("\n[ERROR] SD card mount failed, rebooting...");
-    ESP.restart();
-  }
-
-  uint8_t cardType = SD.cardType();
-  if (cardType == CARD_NONE) {
-    Serial0.println("\n[ERROR] No SD card attached, rebooting...");
-    ESP.restart();
-  }
-
-  Serial0.print("\n[DEBUG] SD Card type: ");
-  switch (cardType) {
-    case CARD_MMC:  Serial0.print("MMC"); break;
-    case CARD_SD:   Serial0.print("SDSC"); break;
-    case CARD_SDHC: Serial0.print("SDHC"); break;
-    default:        Serial0.print("UNKNOWN"); break;
-  }
-
-  uint64_t cardSize = SD.cardSize() / (1024 * 1024);
-  Serial0.printf(", Size: %llu MB\n", cardSize);
 }
 
 // --- Soil sensors ---
@@ -248,25 +115,25 @@ void soilTask(void *pvParameters) {
     struct tm timeinfo;
     localtime_r(&now, &timeinfo);
 
-    // Reset logs at start of light cycle
     if (timeinfo.tm_hour == config.lightStart && timeinfo.tm_hour != lastHour) {
-      dumpSoilLogsToSD();   // dump before reset
+      dumpSoilLogsToSD();
       resetSoilLogs();
     }
     lastHour = timeinfo.tm_hour;
 
-    // Check if inside light cycle
+    int startHour = (config.lightStart - 1 + 24) % 24; // start one hour earlier
+    int endHour   = config.lightEnd;
+
     bool inLightCycle;
-    if (config.lightStart < config.lightEnd) {
-      inLightCycle = (timeinfo.tm_hour >= config.lightStart && timeinfo.tm_hour < config.lightEnd);
+    if (startHour < endHour) {
+      inLightCycle = (timeinfo.tm_hour >= startHour && timeinfo.tm_hour < endHour);
     } else {
-      inLightCycle = (timeinfo.tm_hour >= config.lightStart || timeinfo.tm_hour < config.lightEnd);
+      inLightCycle = (timeinfo.tm_hour >= startHour || timeinfo.tm_hour < endHour);
     }
 
-    // Every 15 minutes
     if (inLightCycle && (timeinfo.tm_min % 15 == 0)) {
       readSoilSensors();
-      addSoilLog();
+      addSoilLog(lastSoilReadings);
       vTaskDelay(60000 / portTICK_PERIOD_MS);
     }
 
@@ -274,36 +141,63 @@ void soilTask(void *pvParameters) {
   }
 }
 
-// --- Archive helper ---
-JsonArray listSoilFiles(JsonDocument &doc) {
-  File root = SD.open("/");
-  JsonArray arr = doc.to<JsonArray>();
-
-  if (!root || !root.isDirectory()) {
-    return arr;
+// --- Watering control ---
+void waterValve(int id, int seconds) {
+  if (id < 0 || id >= 4) {
+    logDebug("Invalid valve ID: " + String(id));
+    return;
   }
 
-  std::vector<String> files;
-  File file = root.openNextFile();
-  while (file) {
-    String name = file.name();
-    if (name.startsWith("/soil_") && name.endsWith(".json")) {
-      files.push_back(name);
-    }
-    file = root.openNextFile();
+  if (pumpActive) {
+    logDebug("Pump already active, rejecting watering request");
+    return;
   }
 
-  std::sort(files.begin(), files.end(), std::greater<String>());
+  // Clamp duration
+  if (seconds < 1) seconds = 1;
+  if (seconds > 300) seconds = 300;
 
-  for (auto &f : files) {
-    arr.add(f);
-  }
+  logDebug("Watering valve " + String(id) + " for " + String(seconds) + "s");
 
-  return arr;
+  // Pump ON (relay5vPins[7] = pin 4, active LOW)
+  digitalWrite(relay5vPins[7], LOW);
+  // Valve ON (12V relay, active HIGH)
+  digitalWrite(relay12vPins[id], HIGH);
+
+  pumpActive = true;
+
+  struct ValveArgs { int id; int seconds; };
+  ValveArgs *args = new ValveArgs{id, seconds};
+
+  xTaskCreatePinnedToCore(
+    [](void *param) {
+      ValveArgs *a = (ValveArgs*)param;
+      vTaskDelay(a->seconds * 1000 / portTICK_PERIOD_MS);
+
+      // Turn valve OFF
+      digitalWrite(relay12vPins[a->id], LOW);
+      // Turn pump OFF
+      digitalWrite(relay5vPins[7], HIGH);
+
+      pumpActive = false;
+
+      logDebug("Valve " + String(a->id) + " OFF, pump OFF after watering");
+
+      delete a;
+      vTaskDelete(NULL);
+    },
+    "ValveTimer",
+    2048,
+    args,
+    1,
+    NULL,
+    1
+  );
 }
 
 // --- Web server ---
 void setupServer() {
+  // Status
   server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request) {
     JsonDocument doc;
     doc["wifi"] = WiFi.SSID();
@@ -319,11 +213,20 @@ void setupServer() {
     JsonArray soil = doc["soilReadings"].to<JsonArray>();
     for (int i = 0; i < 4; i++) soil.add(lastSoilReadings[i]);
 
+    // Add timestamp of last reading
+    time_t now = time(nullptr);
+    struct tm timeinfo;
+    localtime_r(&now, &timeinfo);
+    char buf[25];
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &timeinfo);
+    doc["lastReadingTimestamp"] = buf;
+
     String json;
     serializeJson(doc, json);
     request->send(200, "application/json", json);
   });
 
+  // Config update
   server.on("/config", HTTP_POST, [](AsyncWebServerRequest *request) {}, NULL,
     [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
       JsonDocument doc;
@@ -349,12 +252,13 @@ void setupServer() {
       request->send(200, "application/json", "{\"status\":\"ok\"}");
     });
 
+  // Reset config
   server.on("/reset", HTTP_POST, [](AsyncWebServerRequest *request) {
     config.reset();
     request->send(200, "application/json", "{\"status\":\"reset\"}");
   });
 
-  // History BEFORE sensors
+  // Sensors history
   server.on("/sensors/history", HTTP_GET, [](AsyncWebServerRequest *request) {
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
@@ -381,9 +285,9 @@ void setupServer() {
     request->send(200, "application/json", json);
   });
 
+  // Sensors immediate read (no logging)
   server.on("/sensors", HTTP_GET, [](AsyncWebServerRequest *request) {
-    readSoilSensors();
-    addSoilLog();
+    readSoilSensors();   // updates lastSoilReadings only
 
     JsonDocument doc;
     JsonArray soil = doc["soilReadings"].to<JsonArray>();
@@ -394,35 +298,41 @@ void setupServer() {
     request->send(200, "application/json", json);
   });
 
-  // Archive endpoint
-  server.on("/sensors/archive", HTTP_GET, [](AsyncWebServerRequest *request) {
-    if (request->hasParam("file")) {
-      String filename = request->getParam("file")->value();
-      if (!SD.exists(filename)) {
-        request->send(404, "application/json", "{\"error\":\"File not found\"}");
-        return;
-      }
-      request->send(SD, filename, "application/json");
+  // Watering endpoint
+  server.on("/watering", HTTP_POST, [](AsyncWebServerRequest *request) {
+    if (!request->hasParam("id")) {
+      request->send(400, "application/json", "{\"error\":\"Missing valve ID\"}");
       return;
     }
 
-    if (request->hasParam("date")) {
-      String date = request->getParam("date")->value();
-      String filename = "/soil_" + date + ".json";
-
-      if (!SD.exists(filename)) {
-        request->send(404, "application/json", "{\"error\":\"File not found\"}");
-        return;
-      }
-      request->send(SD, filename, "application/json");
+    int id = request->getParam("id")->value().toInt();
+    if (id < 0 || id > 3) {
+      request->send(400, "application/json", "{\"error\":\"Invalid valve ID (0-3)\"}");
       return;
     }
+
+    if (pumpActive) {
+      request->send(409, "application/json", "{\"error\":\"Pump already active\"}");
+      return;
+    }
+
+    int seconds = 10;
+    if (request->hasParam("time")) {
+      seconds = request->getParam("time")->value().toInt();
+    }
+    if (seconds < 1 || seconds > 300) {
+      request->send(400, "application/json", "{\"error\":\"Invalid time (1-300)\"}");
+      return;
+    }
+
+    waterValve(id, seconds);
 
     JsonDocument doc;
-    JsonArray arr = listSoilFiles(doc);
-
+    doc["valve"] = id;
+    doc["time"] = seconds;
+    doc["status"] = "started";
     String json;
-    serializeJson(arr, json);
+    serializeJson(doc, json);
     request->send(200, "application/json", json);
   });
 

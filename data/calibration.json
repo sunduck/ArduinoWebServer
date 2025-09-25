@@ -1,0 +1,60 @@
+{
+  "valves": {
+    "0": {
+      "with_dripper": {
+        "flow_ml_per_s": null,
+        "notes": "no measurement yet"
+      },
+      "without_dripper": {
+        "flow_ml_per_s": 15.57,
+        "samples": [
+          { "time_s": 30, "volume_ml": 467 }
+        ]
+      }
+    },
+    "1": {
+      "with_dripper": {
+        "flow_ml_per_s": 14.40,
+        "samples": [
+          { "time_s": 30, "volume_ml": 432 }
+        ]
+      },
+      "without_dripper": {
+        "flow_ml_per_s": 15.57,
+        "samples": [
+          { "time_s": 30, "volume_ml": 467 }
+        ]
+      }
+    },
+    "2": {
+      "with_dripper": {
+        "flow_ml_per_s": 14.37,
+        "samples": [
+          { "time_s": 30, "volume_ml": 431 }
+        ]
+      },
+      "without_dripper": {
+        "flow_ml_per_s": 15.37,
+        "samples": [
+          { "time_s": 30, "volume_ml": 461 }
+        ]
+      }
+    },
+    "3": {
+      "with_dripper": {
+        "flow_ml_per_s": 14.08,
+        "samples": [
+          { "time_s": 30, "volume_ml": 421 },
+          { "time_s": 30, "volume_ml": 424 }
+        ]
+      },
+      "without_dripper": {
+        "flow_ml_per_s": 15.05,
+        "samples": [
+          { "time_s": 30, "volume_ml": 455 },
+          { "time_s": 30, "volume_ml": 448 }
+        ]
+      }
+    }
+  }
+}
