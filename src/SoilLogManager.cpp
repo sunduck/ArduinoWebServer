@@ -1,26 +1,38 @@
 #include "SoilLogManager.h"
 
-const int MAX_LOGS = 500;
 SoilLog soilLogs[MAX_LOGS];
 int logIndex = 0;
 int logCount = 0;
 
-extern void logDebug(const String &msg); // from main.cpp
-
-void addSoilLog(int lastSoilReadings[4]) {
-  SoilLog entry;
+void addSoilLog(int values[4], int wateringValve, int wateringTime) {
+  SoilLog &entry = soilLogs[logIndex];
   entry.timestamp = time(nullptr);
-  for (int i = 0; i < 4; i++) entry.values[i] = lastSoilReadings[i];
 
-  soilLogs[logIndex] = entry;
+  for (int i = 0; i < 4; i++) {
+    entry.values[i] = values[i];
+    entry.watering[i] = false;
+    entry.wateringTime[i] = 0;
+  }
+
+  if (wateringValve >= 0 && wateringValve < 4) {
+    entry.watering[wateringValve] = true;
+    entry.wateringTime[wateringValve] = wateringTime;
+  }
+
   logIndex = (logIndex + 1) % MAX_LOGS;
   if (logCount < MAX_LOGS) logCount++;
-
-  logDebug("Soil log added");
 }
 
 void resetSoilLogs() {
   logIndex = 0;
   logCount = 0;
-  logDebug("Soil log reset at lightStart");
+
+  for (int i = 0; i < MAX_LOGS; i++) {
+    soilLogs[i].timestamp = 0;
+    for (int j = 0; j < 4; j++) {
+      soilLogs[i].values[j] = 0;
+      soilLogs[i].watering[j] = false;
+      soilLogs[i].wateringTime[j] = 0;
+    }
+  }
 }

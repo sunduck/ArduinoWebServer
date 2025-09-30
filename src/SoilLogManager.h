@@ -1,19 +1,18 @@
 #pragma once
 #include <Arduino.h>
-#include <time.h>
 
-// Definition of SoilLog
+#define MAX_LOGS 512
+
 struct SoilLog {
   time_t timestamp;
-  int values[4];
+  int values[4];             // soil sensor values
+  bool watering[4];          // true if watering happened on this valve
+  int wateringTime[4];       // duration (s) for each valve, 0 if none
 };
 
-// Globals
-extern SoilLog soilLogs[];
+extern SoilLog soilLogs[MAX_LOGS];
 extern int logIndex;
 extern int logCount;
-extern const int MAX_LOGS;
 
-// Functions
-void addSoilLog(int lastSoilReadings[4]);
+void addSoilLog(int values[4], int wateringValve = -1, int wateringSeconds = 0);
 void resetSoilLogs();

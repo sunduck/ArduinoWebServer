@@ -3,15 +3,11 @@
 #include <FS.h>
 #include <SD.h>
 #include <SPI.h>
-#include <ArduinoJson.h>
-
-// SD pins
-#define SD_SCK   42
-#define SD_MISO  1
-#define SD_MOSI  2
-#define SD_CS    41
 
 extern bool sdAvailable;
 
 void setupSD();
 void dumpSoilLogsToSD();
+
+// File upload helper
+bool saveUploadedFile(const String &filename, size_t index, uint8_t *data, size_t len, bool final);

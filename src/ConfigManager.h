@@ -1,14 +1,15 @@
 #pragma once
-#include <Arduino.h>
-#include <Preferences.h>
-#include <vector>
 
+#include <vector>       // make sure STL vector is seen first
+#include <Arduino.h>    // defines String and other Arduino types
+#include <Preferences.h>
 class ConfigManager {
 public:
   String mode;
   int lightStart;
   int lightEnd;
-  int sensorSettleTime;              // NEW: delay for soil sensor stabilization (ms)
+  int sensorSettleTime;      // delay for soil sensor stabilization (ms)
+  int soilLogIntervalMin;    // NEW: soil logging interval in minutes
   std::vector<String> wateringTimes;
 
   void load();
