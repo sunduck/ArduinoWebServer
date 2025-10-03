@@ -9,8 +9,8 @@ void ConfigManager::load() {
   mode = preferences.getString("mode", "growing");
   lightStart = preferences.getInt("lightStart", 23);
   lightEnd = preferences.getInt("lightEnd", 17);
-  sensorSettleTime = preferences.getInt("sensorSettleTime", 300); // default 300 ms
-  soilLogIntervalMin = preferences.getInt("soilLogIntervalMin", 15); // NEW default 15 min
+  sensorSettleTime = preferences.getInt("settleTime", 300); // default 300 ms
+  soilLogIntervalMin = preferences.getInt("logIntrvl", 15); // NEW default 15 min
 
   wateringTimes.clear();
   for (int i = 0; i < 3; i++) {
@@ -26,8 +26,8 @@ void ConfigManager::save() {
   preferences.putString("mode", mode);
   preferences.putInt("lightStart", lightStart);
   preferences.putInt("lightEnd", lightEnd);
-  preferences.putInt("sensorSettleTime", sensorSettleTime);
-  preferences.putInt("soilLogIntervalMin", soilLogIntervalMin); // NEW
+  preferences.putInt("settleTime", sensorSettleTime);
+  preferences.putInt("logIntrvl", soilLogIntervalMin); // NEW
 
   for (size_t i = 0; i < wateringTimes.size(); i++) {
     String key = "wt" + String(i);

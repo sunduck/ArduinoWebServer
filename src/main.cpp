@@ -6,7 +6,6 @@
 #include <time.h>
 #include "WiFiCredentials.h"
 #include "ConfigManager.h"
-#include "SDManager.h"
 #include "SoilLogManager.h"
 #include "ServerManager.h"
 
@@ -115,7 +114,6 @@ void soilTask(void *pvParameters) {
 
     // Daily rollover at lightStart (fire once when hour changes to lightStart)
     if (timeinfo.tm_hour == config.lightStart && timeinfo.tm_hour != lastHour) {
-      dumpSoilLogsToSD();
       resetSoilLogs();
     }
     lastHour = timeinfo.tm_hour;
@@ -213,7 +211,6 @@ void setup() {
   setupNTP();
 
   config.load();
-  setupSD();
 
   // Register routes (ServerManager.cpp)
   setupServer();

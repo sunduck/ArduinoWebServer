@@ -1,6 +1,5 @@
 #include "ServerManager.h"
 #include "ConfigManager.h"
-#include "SDManager.h"
 #include "SoilLogManager.h"
 #include <WiFi.h>
 #include <ArduinoJson.h>
@@ -179,35 +178,6 @@ void setupServer() {
     String json;
     serializeJson(doc, json);
     request->send(200, "application/json", json);
-  });
-
-  server.on("/files/upload", HTTP_GET, [](AsyncWebServerRequest *request) {
-    String html = "<form method='POST' action='/files/upload' enctype='multipart/form-data'>"
-                  "<input type='file' name='upload'>"
-                  "<input type='submit' value='Upload'>"
-                  "</form>";
-    request->send(200, "text/html", html);
-  });
-
-  server.on(
-    "/files/upload", HTTP_POST,
-    [](AsyncWebServerRequest *request) {
-      request->send(200, "text/plain", "Upload complete");
-    },
-    [](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
-      saveUploadedFile(filename, index, data, len, final);
-    }
-  );
-
-  server.serveStatic("/files", SD, "/uploads");
-
-  server.on("/sd/reinit", HTTP_POST, [](AsyncWebServerRequest *request) {
-    setupSD();
-    if (sdAvailable) {
-      request->send(200, "application/json", "{\"status\":\"ok\",\"message\":\"SD reinitialized\"}");
-    } else {
-      request->send(500, "application/json", "{\"status\":\"error\",\"message\":\"SD init failed\"}");
-    }
   });
 
   server.begin();
