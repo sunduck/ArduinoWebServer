@@ -1,13 +1,10 @@
 #include <Arduino.h>
 #include <WiFi.h>
-#include <AsyncTCP.h>
-#include <ESPAsyncWebServer.h>
-#include <ArduinoJson.h>
 #include <time.h>
 #include "WiFiCredentials.h"
 #include "ConfigManager.h"
 #include "SoilLogManager.h"
-#include "ServerManager.h"
+#include <WebServer.h>
 
 // ===============================================================
 // ESP32 Garden Controller - main.cpp
@@ -19,8 +16,8 @@ const int relay12vPins[4] = {47, 21, 20, 19};
 const int soilPins[4]     = {10, 9, 11, 3};
 
 int lastSoilReadings[4] = {0, 0, 0, 0};
-AsyncWebServer server(80);
 ConfigManager config;
+WebServer server(80);
 volatile bool pumpActive = false;  // guard: only one watering at a time
 
 String getTimestamp() {
@@ -157,7 +154,7 @@ void waterValve(int id, int seconds) {
 
   digitalWrite(relay5vPins[7], LOW);   // pump ON (active LOW)
   digitalWrite(relay12vPins[id], HIGH); // valve ON (active HIGH)
-  pumpActive = true;
+  //pumpActive = true;
 
   // Log watering event with snapshot of soil readings
   addSoilLog(lastSoilReadings, id, seconds);
@@ -180,12 +177,27 @@ void waterValve(int id, int seconds) {
       vTaskDelete(NULL);
     },
     "ValveTimer",
-    2048,
+    4096,
     args,
     1,
     NULL,
     1
   );
+}
+
+void handleWatering() {
+  if (!server.hasArg("id") || !server.hasArg("time")) {
+    server.send(400, "application/json", "{\"error\":\"Missing id or time\"}");
+    return;
+  }
+
+  int id = server.arg("id").toInt();
+  int seconds = server.arg("time").toInt();
+
+  waterValve(id, seconds);
+
+  String resp = "{\"status\":\"ok\",\"id\":" + String(id) + ",\"time\":" + String(seconds) + "}";
+  server.send(200, "application/json", resp);
 }
 
 // --- Setup + loop ---
@@ -213,18 +225,20 @@ void setup() {
   config.load();
 
   // Register routes (ServerManager.cpp)
-  setupServer();
-
-  // Start web server after all modules had chance to register endpoints
-  server.begin();
-  logDebug("Web server started");
+  // setupServer();
+  // logDebug("Web server started");
 
   if (config.soilLogIntervalMin <= 0) config.soilLogIntervalMin = 15; // safety default
 
   // Start soil logging task (pinned to core 1)
   xTaskCreatePinnedToCore(soilTask, "SoilTask", 4096, NULL, 1, NULL, 1);
+
+  // Start web server
+  server.on("/watering", HTTP_POST, handleWatering);
+  server.begin();
+  logDebug("Web server started on port 80");
 }
 
 void loop() {
-  // Intentionally empty - work is done in tasks and server callbacks
+  server.handleClient();
 }
