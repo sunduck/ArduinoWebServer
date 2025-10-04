@@ -11,10 +11,12 @@ extern volatile bool pumpActive;
 
 // forward declarations from main.cpp
 void readSoilSensors();
-void waterValve(int id, int seconds);
+void waterValve(int duration0, int duration1, int duration2, int duration3);
 
-void setupServer() {
-  server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request) {
+void setupServer()
+{
+  server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request)
+            {
     JsonDocument doc;
     doc["wifi"] = WiFi.SSID();
     doc["ip"]   = WiFi.localIP().toString();
@@ -23,9 +25,6 @@ void setupServer() {
     doc["lightEnd"]   = config.lightEnd;
     doc["sensorSettleTime"] = config.sensorSettleTime;
     doc["soilLogIntervalMin"] = config.soilLogIntervalMin;
-
-    JsonArray arr = doc["wateringTimes"].to<JsonArray>();
-    for (auto &t : config.wateringTimes) arr.add(t);
 
     JsonArray soil = doc["soilReadings"].to<JsonArray>();
     for (int i = 0; i < 4; i++) soil.add(lastSoilReadings[i]);
@@ -36,71 +35,140 @@ void setupServer() {
     char buf[25];
     strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &timeinfo);
     doc["lastReadingTimestamp"] = buf;
+    int64_t us = esp_timer_get_time();   // microseconds since boot
+    uint64_t s = us / 1000000ULL;        // convert to seconds
+
+    uint32_t days    = s / 86400;
+    uint32_t hours   = (s % 86400) / 3600;
+    uint32_t minutes = (s % 3600) / 60;
+    uint32_t seconds = s % 60;
+    doc["uptime"] = String(days) + "d " + String(hours) + "h " + String(minutes) + "m " + String(seconds) + "s";
+    doc["lastResetReason"] = String(esp_reset_reason());
+    doc["pumpActive"] = pumpActive;
+    doc["freeHeap"] = ESP.getFreeHeap();
+    doc["flashChipSize"] = ESP.getFlashChipSize();
+    doc["sketchSize"] = ESP.getSketchSize();
+    doc["freeSketchSpace"] = ESP.getFreeSketchSpace();
 
     String json;
     serializeJson(doc, json);
-    request->send(200, "application/json", json);
-  });
+    request->send(200, "application/json", json); });
 
-  server.on("/config", HTTP_GET, [](AsyncWebServerRequest *request) {
-    JsonDocument doc;
-    doc["mode"] = config.mode;
-    doc["lightStart"] = config.lightStart;
-    doc["lightEnd"] = config.lightEnd;
-    doc["sensorSettleTime"] = config.sensorSettleTime;
-    doc["soilLogIntervalMin"] = config.soilLogIntervalMin;
+  server.on("/config", HTTP_GET, [](AsyncWebServerRequest *request)
+            {
+    // --- Respond with full updated config (same as GET) ---
+        JsonDocument outDoc;
+        outDoc["mode"] = config.mode;
+        outDoc["lightStart"] = config.lightStart;
+        outDoc["lightEnd"] = config.lightEnd;
+        outDoc["sensorSettleTime"] = config.sensorSettleTime;
+        outDoc["soilLogIntervalMin"] = config.soilLogIntervalMin;
 
-    JsonArray arr = doc["wateringTimes"].to<JsonArray>();
-    for (auto &t : config.wateringTimes) arr.add(t);
-
-    doc["save"] = false;
-
-    String json;
-    serializeJson(doc, json);
-    request->send(200, "application/json", json);
-  });
-
-  server.on("/config", HTTP_POST, [](AsyncWebServerRequest *request) {}, NULL,
-    [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
-      JsonDocument doc;
-      DeserializationError err = deserializeJson(doc, data, len);
-      if (err) {
-        request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
-        return;
-      }
-
-      if (doc["mode"].is<const char*>()) config.mode = String(doc["mode"].as<const char*>());
-      if (doc["lightStart"].is<int>()) config.lightStart = doc["lightStart"].as<int>();
-      if (doc["lightEnd"].is<int>()) config.lightEnd = doc["lightEnd"].as<int>();
-      if (doc["sensorSettleTime"].is<int>()) config.sensorSettleTime = doc["sensorSettleTime"].as<int>();
-      if (doc["soilLogIntervalMin"].is<int>()) config.soilLogIntervalMin = doc["soilLogIntervalMin"].as<int>();
-
-      if (doc["wateringTimes"].is<JsonArray>()) {
-        config.wateringTimes.clear();
-        for (JsonVariant v : doc["wateringTimes"].as<JsonArray>()) {
-          if (v.is<const char*>()) config.wateringTimes.push_back(String(v.as<const char*>()));
+        JsonArray arr = outDoc["wateringSchedules"].to<JsonArray>();
+        for (auto &ws : config.wateringSchedules) {
+            JsonObject obj = arr.add<JsonObject>();
+            obj["time"] = ws.time;
+            JsonArray d = obj["durations"].to<JsonArray>();
+            for (int v = 0; v < 4; v++) d.add(ws.durations[v]);
         }
-      }
 
-      bool persist = false;
-      if (doc["save"].is<bool>() && doc["save"].as<bool>() == true) {
-        persist = true;
-      }
+        String json;
+        serializeJson(outDoc, json);
+        request->send(200, "application/json", json); });
 
-      if (persist) {
-        config.save();
-        request->send(200, "application/json", "{\"status\":\"saved\"}");
-      } else {
-        request->send(200, "application/json", "{\"status\":\"applied (RAM only)\"}");
-      }
-    });
+  server.on("/config", HTTP_POST, [](AsyncWebServerRequest *request) {}, NULL, [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
+            {
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, data, len);
+        if (err) {
+            request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+            return;
+        }
 
-  server.on("/reset", HTTP_POST, [](AsyncWebServerRequest *request) {
+        // --- Apply basic fields ---
+        if (doc["mode"].is<const char*>()) config.mode = String(doc["mode"].as<const char*>());
+        if (doc["lightStart"].is<int>()) config.lightStart = doc["lightStart"].as<int>();
+        if (doc["lightEnd"].is<int>()) config.lightEnd = doc["lightEnd"].as<int>();
+        if (doc["sensorSettleTime"].is<int>()) config.sensorSettleTime = doc["sensorSettleTime"].as<int>();
+        if (doc["soilLogIntervalMin"].is<int>()) config.soilLogIntervalMin = doc["soilLogIntervalMin"].as<int>();
+
+        // --- Validate and apply watering schedules ---
+        if (doc["wateringSchedules"].is<JsonArray>()) {
+            std::vector<WateringSchedule> newSchedules;
+
+            for (JsonObject obj : doc["wateringSchedules"].as<JsonArray>())
+            {
+              if (!obj["time"].is<const char *>() || !obj["durations"].is<JsonArray>())
+              {
+                request->send(400, "application/json", "{\"error\":\"wateringSchedules must contain time and durations\"}");
+                return;
+              }
+
+              String t = obj["time"].as<String>();
+              if (t.length() != 5 || t.charAt(2) != ':')
+              {
+                request->send(400, "application/json", "{\"error\":\"Invalid time format, must be HH:MM\"}");
+                return;
+              }
+
+              JsonArray arr = obj["durations"].as<JsonArray>();
+              if (arr.size() != 4)
+              {
+                request->send(400, "application/json", "{\"error\":\"Each schedule must have exactly 4 durations\"}");
+                return;
+              }
+
+              WateringSchedule ws;
+              ws.time = t;
+              for (int i = 0; i < 4; i++)
+              {
+                int d = arr[i].as<int>();
+                if (d < 0 || d > 600)
+                { // limit 0–600 sec for safety
+                  request->send(400, "application/json", "{\"error\":\"Duration out of range (0–600)\"}");
+                  return;
+                }
+                ws.durations[i] = d;
+              }
+              newSchedules.push_back(ws);
+            }
+
+            // Replace only if all schedules valid
+            config.wateringSchedules = newSchedules;
+        }
+
+        // Save if requested
+        if (doc["save"].is<bool>() && doc["save"].as<bool>()) {
+            config.save();
+        }
+
+        // --- Respond with full updated config (same as GET) ---
+        JsonDocument outDoc;
+        outDoc["mode"] = config.mode;
+        outDoc["lightStart"] = config.lightStart;
+        outDoc["lightEnd"] = config.lightEnd;
+        outDoc["sensorSettleTime"] = config.sensorSettleTime;
+        outDoc["soilLogIntervalMin"] = config.soilLogIntervalMin;
+
+        JsonArray arr = outDoc["wateringSchedules"].to<JsonArray>();
+        for (auto &ws : config.wateringSchedules) {
+            JsonObject obj = arr.add<JsonObject>();
+            obj["time"] = ws.time;
+            JsonArray d = obj["durations"].to<JsonArray>();
+            for (int v = 0; v < 4; v++) d.add(ws.durations[v]);
+        }
+
+        String json;
+        serializeJson(outDoc, json);
+        request->send(200, "application/json", json); });
+
+  server.on("/reset", HTTP_POST, [](AsyncWebServerRequest *request)
+            {
     config.reset();
-    request->send(200, "application/json", "{\"status\":\"reset\"}");
-  });
+    request->send(200, "application/json", "{\"status\":\"reset\"}"); });
 
-  server.on("/logs", HTTP_GET, [](AsyncWebServerRequest *request) {
+  server.on("/logs", HTTP_GET, [](AsyncWebServerRequest *request)
+            {
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
 
@@ -131,54 +199,53 @@ void setupServer() {
 
     String json;
     serializeJson(doc, json);
-    request->send(200, "application/json", json);
-  });
+    request->send(200, "application/json", json); });
 
-  server.on("/sensors", HTTP_GET, [](AsyncWebServerRequest *request) {
+  server.on("/sensors", HTTP_GET, [](AsyncWebServerRequest *request)
+            {
     readSoilSensors();
     JsonDocument doc;
     JsonArray soil = doc["soilReadings"].to<JsonArray>();
     for (int i = 0; i < 4; i++) soil.add(lastSoilReadings[i]);
     String json;
     serializeJson(doc, json);
-    request->send(200, "application/json", json);
-  });
+    request->send(200, "application/json", json); });
 
-  server.on("/watering", HTTP_POST, [](AsyncWebServerRequest *request) {
-    if (!request->hasParam("id")) {
-      request->send(400, "application/json", "{\"error\":\"Missing valve ID\"}");
-      return;
-    }
-
-    int id = request->getParam("id")->value().toInt();
-    if (id < 0 || id > 3) {
-      request->send(400, "application/json", "{\"error\":\"Invalid valve ID (0-3)\"}");
-      return;
-    }
+  server.on("/watering", HTTP_POST, [](AsyncWebServerRequest *request)
+            {
 
     if (pumpActive) {
       request->send(409, "application/json", "{\"error\":\"Pump already active\"}");
       return;
     }
 
-    int seconds = 10;
-    if (request->hasParam("time")) {
-      seconds = request->getParam("time")->value().toInt();
+    int duration0 = 0;
+    if (request->hasParam("duration0")) {
+      duration0 = request->getParam("duration0")->value().toInt();
     }
-    if (seconds < 1 || seconds > 300) {
-      request->send(400, "application/json", "{\"error\":\"Invalid time (1-300)\"}");
-      return;
+    int duration1 = 0;
+    if (request->hasParam("duration1")) {
+      duration1 = request->getParam("duration1")->value().toInt();
+    }
+    int duration2 = 0;
+    if (request->hasParam("duration2")) {
+      duration2 = request->getParam("duration2")->value().toInt();
+    }
+    int duration3 = 0;
+    if (request->hasParam("duration3")) {
+      duration3 = request->getParam("duration3")->value().toInt();
     }
 
-    waterValve(id, seconds);
+    waterValve(duration0, duration1, duration2, duration3);
     JsonDocument doc;
-    doc["valve"] = id;
-    doc["time"] = seconds;
+    doc["duration0"] = duration0;
+    doc["duration1"] = duration1;
+    doc["duration2"] = duration2;
+    doc["duration3"] = duration3;
     doc["status"] = "started";
     String json;
     serializeJson(doc, json);
-    request->send(200, "application/json", json);
-  });
+    request->send(200, "application/json", json); });
 
   server.begin();
 }

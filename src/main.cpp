@@ -97,7 +97,7 @@ void readSoilSensors() {
     }
     int value = sum / samples;
     lastSoilReadings[i] = value;
-    logDebug("Soil sensor " + String(i) + ": " + String(value));
+    //logDebug("Soil sensor " + String(i) + ": " + String(value));
 
     digitalWrite(relay5vPins[i], HIGH); // disable sensor
   }
@@ -139,53 +139,83 @@ void soilTask(void *pvParameters) {
 }
 
 // --- Watering control ---
-void waterValve(int id, int seconds) {
-  if (id < 0 || id >= 4) {
-    logDebug("Invalid valve ID: " + String(id));
-    return;
-  }
+void waterValve(int duration0, int duration1, int duration2, int duration3) {
 
   if (pumpActive) {
     logDebug("Pump already active, rejecting watering request");
     return;
   }
 
-  if (seconds < 1) seconds = 1;
-  if (seconds > 300) seconds = 300;
-
-  logDebug("Watering valve " + String(id) + " for " + String(seconds) + "s");
-
-  digitalWrite(relay5vPins[7], LOW);   // pump ON (active LOW)
-  digitalWrite(relay12vPins[id], HIGH); // valve ON (active HIGH)
   pumpActive = true;
 
-  // Log watering event with snapshot of soil readings
-  addSoilLog(lastSoilReadings, id, seconds);
+  int ValveDurations[4] = {duration0, duration1, duration2, duration3};
+  int* durations = new int[4];
+  memcpy(durations, ValveDurations, sizeof(ValveDurations));
 
-  struct ValveArgs { int id; int seconds; };
-  ValveArgs *args = new ValveArgs{id, seconds};
 
   xTaskCreatePinnedToCore(
     [](void *param) {
-      ValveArgs *a = (ValveArgs*)param;
-      vTaskDelay(a->seconds * 1000 / portTICK_PERIOD_MS);
-
-      digitalWrite(relay12vPins[a->id], LOW); // Valve OFF
-      digitalWrite(relay5vPins[7], HIGH);     // Pump OFF
-
+      int* durations = (int*)param;
+      for (int i = 0; i < 4; i++) {
+        int seconds = durations[i];
+        //logDebug("Valve " + String(i) + " for " + String(seconds) + "s");
+        if (seconds > 0) {
+          //logDebug("Watering valve " + String(i) + " for " + String(seconds) + "s");
+          digitalWrite(relay12vPins[i], HIGH); // valve ON (active HIGH)
+          digitalWrite(relay5vPins[7], LOW);   // pump ON (active LOW)
+          vTaskDelay((seconds + 5) * 1000 / portTICK_PERIOD_MS); // wait for valve + pump to finish, add buffer
+          digitalWrite(relay5vPins[7], HIGH);     // pump OFF
+          digitalWrite(relay12vPins[i], LOW); // Valve OFF
+          //logDebug("Valve " + String(i) + " OFF, pump OFF after watering");
+          vTaskDelay (5000 / portTICK_PERIOD_MS); // wait 5s before next valve
+        }
+      }
       pumpActive = false;
-      logDebug("Valve " + String(a->id) + " OFF, pump OFF after watering");
-
-      delete a;
+      //logDebug("Watering task completed, pump OFF");
+      delete[] durations; // Free memory after use
       vTaskDelete(NULL);
     },
-    "ValveTimer",
-    2048,
-    args,
-    1,
-    NULL,
-    1
+    "WateringTask",
+    4096,
+    durations,
+    1,NULL,
+    1 
+
   );
+}
+
+void wateringTask(void *pvParameters) {
+  int lastMinute = -1;
+  TickType_t lastWake = xTaskGetTickCount();
+
+  for (;;) {
+    time_t now = time(nullptr);
+    struct tm timeinfo;
+    localtime_r(&now, &timeinfo);
+
+    if (timeinfo.tm_min != lastMinute) {
+      lastMinute = timeinfo.tm_min;
+
+      char buf[6];
+      strftime(buf, sizeof(buf), "%H:%M", &timeinfo);
+
+      for (const auto &sched : config.wateringSchedules) {
+        if (sched.time == String(buf)) {
+          
+          //Serial0.printf("[WateringTask] Schedule triggered: %s\n", sched.time.c_str());
+          waterValve(sched.durations[0], sched.durations[1], sched.durations[2], sched.durations[3]);
+          for (int i = 0; i < 4; i++) {
+            if (sched.durations[i] > 0) {
+              //logDebug("Scheduled watering: Valve " + String(i) + " for " + String(sched.durations[i]) + "s");
+              addSoilLog(lastSoilReadings, i, sched.durations[i]); // log with watering event
+            }
+          }
+           // log with watering event
+        }
+      }
+    }
+    vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(1000));
+  }
 }
 
 // --- Setup + loop ---
@@ -223,6 +253,8 @@ void setup() {
 
   // Start soil logging task (pinned to core 1)
   xTaskCreatePinnedToCore(soilTask, "SoilTask", 4096, NULL, 1, NULL, 1);
+
+  xTaskCreatePinnedToCore(wateringTask, "WateringTask", 4096, NULL, 1, NULL, 1);
 }
 
 void loop() {
