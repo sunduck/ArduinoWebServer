@@ -1,7 +1,7 @@
 #pragma once
 #include <Arduino.h>
 
-#define MAX_LOGS 512
+#define MAX_LOGS 128
 
 struct SoilLog {
   time_t timestamp;

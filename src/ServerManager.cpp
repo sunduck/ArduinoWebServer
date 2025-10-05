@@ -11,10 +11,36 @@ extern volatile bool pumpActive;
 
 // forward declarations from main.cpp
 void readSoilSensors();
-void waterValve(int duration0, int duration1, int duration2, int duration3);
+void wateringCycle(int duration0, int duration1, int duration2, int duration3);
 
 void setupServer()
 {
+  // status endpoint - returns current status as JSON
+  // example response:
+  /*
+  {
+    "wifi": "MySSID",
+    "ip": "192.168.1.125",
+    "mode": "growing",
+    "lightStart": 23,
+    "lightEnd": 17,
+    "sensorSettleTime": 300,
+    "soilLogIntervalMin": 15,
+    "soilReadings": [
+        353,
+        322,
+        297,
+        339
+    ],
+    "lastReadingTimestamp": "2025-10-05 16:33:41",
+    "uptime": "1d 17h 1m 37s",
+    "lastResetReason": "1",
+    "pumpActive": false,
+    "freeHeap": 185388,
+    "flashChipSize": 16777216,
+    "sketchSize": 895936,
+    "freeSketchSpace": 6553600
+}*/
   server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request)
             {
     JsonDocument doc;
@@ -54,9 +80,49 @@ void setupServer()
     serializeJson(doc, json);
     request->send(200, "application/json", json); });
 
+  // config endpoint - GET returns current config as JSON
+  // POST with JSON body to update config (and optionally save to flash)
+  // example GET response:
+  /*
+  {
+  "mode": "growing",
+  "lightStart": 23,
+  "lightEnd": 17,
+  "sensorSettleTime": 300,
+  "soilLogIntervalMin": 15,
+  "wateringSchedules": [
+      {
+          "time": "23:00",
+          "durations": [
+              45,
+              45,
+              45,
+              45
+          ]
+      },
+      {
+          "time": "05:00",
+          "durations": [
+              30,
+              30,
+              30,
+              30
+          ]
+      },
+      {
+          "time": "11:00",
+          "durations": [
+              30,
+              30,
+              30,
+              30
+          ]
+      }
+  ]
+}
+*/
   server.on("/config", HTTP_GET, [](AsyncWebServerRequest *request)
             {
-    // --- Respond with full updated config (same as GET) ---
         JsonDocument outDoc;
         outDoc["mode"] = config.mode;
         outDoc["lightStart"] = config.lightStart;
@@ -161,7 +227,8 @@ void setupServer()
         String json;
         serializeJson(outDoc, json);
         request->send(200, "application/json", json); });
-
+  // reset endpoint - resets config to defaults
+  // require to recover from BAD or create NEW config on config structure change
   server.on("/reset", HTTP_POST, [](AsyncWebServerRequest *request)
             {
     config.reset();
@@ -201,6 +268,7 @@ void setupServer()
     serializeJson(doc, json);
     request->send(200, "application/json", json); });
 
+  // sensors endpoint - mannualy reads soil sensors and returns current readings as JSON
   server.on("/sensors", HTTP_GET, [](AsyncWebServerRequest *request)
             {
     readSoilSensors();
@@ -211,6 +279,10 @@ void setupServer()
     serializeJson(doc, json);
     request->send(200, "application/json", json); });
 
+  // watering endpoint - starts watering cycle with optional durations for each valve
+  // example: /watering?duration0=30&duration1=45&duration2=0&duration3=15
+  // durations in seconds, if not specified valve will be skipped
+  // if pump already active, returns 409 error
   server.on("/watering", HTTP_POST, [](AsyncWebServerRequest *request)
             {
 
@@ -236,7 +308,7 @@ void setupServer()
       duration3 = request->getParam("duration3")->value().toInt();
     }
 
-    waterValve(duration0, duration1, duration2, duration3);
+    wateringCycle(duration0, duration1, duration2, duration3);
     JsonDocument doc;
     doc["duration0"] = duration0;
     doc["duration1"] = duration1;

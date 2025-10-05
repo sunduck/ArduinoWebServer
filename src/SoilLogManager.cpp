@@ -1,6 +1,6 @@
 #include "SoilLogManager.h"
 
-SoilLog soilLogs[MAX_LOGS];
+SoilLog soilLogs[128];
 int logIndex = 0;
 int logCount = 0;
 
