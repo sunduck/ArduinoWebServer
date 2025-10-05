@@ -24,11 +24,13 @@
 //           4x5V resistive soil moisture sensors
 //           8x5v relay board (4 relays to power up soil sensors, for 12v membrane water pump), 
 //           4x12V relay board (for 4 12v water valves) 
-//                    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+//
+//                                     !!! IMPORTANT !!!
 //           Don't forget to shunt those 12V valves with a diodes (1N4007 or similar) 
-//     Or EMI from discharging coil will corrupt your ESP32 flash on each valve shut down! 
-//                  (Seriously, i lost a week of nerves to find this out)
-//                    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+// Otherwise EMI from discharging valve coil will corrupt your ESP32 flash on valve powering off! 
+//    (Seriously, i lost a lot of time to find this out, i slept on electrotechnics lectures)
+//                                     !!!!!!!!!!!!!!!!!
+//
 // Control via REST on web interface, config stored in flash - it won't loose config on power loss
 // Currently my system can supply ~15 ml/s flow rate.
 // ===============================================================
