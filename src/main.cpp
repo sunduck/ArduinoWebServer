@@ -42,7 +42,13 @@ const int relay5vPins[8] = {18, 17, 16, 15, 7, 6, 5, 4};
 const int relay12vPins[4] = {47, 21, 20, 19};
 const int soilPins[4] = {10, 9, 11, 3};
 
-int lastSoilReadings[4] = {0, 0, 0, 0};
+// Last readed soil humidity values
+uint16_t soilReadingsLast[4] = {0, 0, 0, 0};
+// Minimal readings of soil humidity, most wet value
+uint16_t soilReadingsMin[4] = {4095, 4095, 4095, 4095};
+// Maximal readings of soil humidity, most dry value
+uint16_t soilReadingsMax[4] = {0, 0, 0, 0};
+
 AsyncWebServer server(80);
 ConfigManager config;
 LogManager log;
@@ -148,7 +154,11 @@ void readSoilSensor(int sensorId)
       delay(50);
     }
     int value = sum / config.soilSensorCounter;
-    lastSoilReadings[sensorId] = value;
+    soilReadingsLast[sensorId] = value;
+    if (value < soilReadingsMin[sensorId])
+      soilReadingsMin[sensorId] = value;
+    if (value > soilReadingsMax[sensorId])
+      soilReadingsMax[sensorId] = value;
     log.addSoilEvent(sensorId, value);
     // powering down 5V sensor
     digitalWrite(relay5vPins[sensorId], HIGH); // powering sensor off

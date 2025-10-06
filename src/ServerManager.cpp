@@ -5,7 +5,9 @@
 #include <ArduinoJson.h>
 #include <time.h>
 
-extern int lastSoilReadings[4];
+extern uint16_t soilReadingsLast[4];
+extern uint16_t soilReadingsMax[4];
+extern uint16_t soilReadingsMin[4];
 extern ConfigManager config;
 extern LogManager log;
 extern volatile bool pumpActive;
@@ -27,7 +29,19 @@ void setupServer()
     "lightEnd": 17,
     "sensorSettleTime": 300,
     "soilLogIntervalMin": 15,
-    "soilReadings": [
+    "soilHumidityLast": [
+        353,
+        322,
+        297,
+        339
+    ],
+    "soilHumidityMin": [
+        353,
+        322,
+        297,
+        339
+    ],
+    "soilHumidityMax": [
         353,
         322,
         297,
@@ -53,8 +67,12 @@ void setupServer()
     doc["sensorSettleTime"] = config.sensorSettleTime;
     doc["soilLogIntervalMin"] = config.soilLogIntervalMin;
 
-    JsonArray soil = doc["soilReadings"].to<JsonArray>();
-    for (int i = 0; i < 4; i++) soil.add(lastSoilReadings[i]);
+    JsonArray soil = doc["soilHumidityLast"].to<JsonArray>();
+    for (int i = 0; i < 4; i++) soil.add(soilReadingsLast[i]);
+    JsonArray soil = doc["soilHumidityMax"].to<JsonArray>();
+    for (int i = 0; i < 4; i++) soil.add(soilReadingsMax[i]);
+    JsonArray soil = doc["soilHumidityMin"].to<JsonArray>();
+    for (int i = 0; i < 4; i++) soil.add(soilReadingsMin[i]);
 
     time_t now = time(nullptr);
     struct tm timeinfo;
@@ -235,8 +253,8 @@ void setupServer()
     config.reset();
     request->send(200, "application/json", "{\"status\":\"reset\"}"); });
 
-  
-  server.on("/logs", HTTP_GET, [](AsyncWebServerRequest *request) {
+  server.on("/logs", HTTP_GET, [](AsyncWebServerRequest *request)
+            {
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
     int count = log.getEventCount();
@@ -255,16 +273,15 @@ void setupServer()
     }
     String json;
     serializeJson(doc, json);
-    request->send(200, "application/json", json);
-  });
+    request->send(200, "application/json", json); });
 
   // sensors endpoint - mannualy reads soil sensors and returns current readings as JSON
   server.on("/sensors", HTTP_GET, [](AsyncWebServerRequest *request)
             {
     readSoilSensors();
     JsonDocument doc;
-    JsonArray soil = doc["soilReadings"].to<JsonArray>();
-    for (int i = 0; i < 4; i++) soil.add(lastSoilReadings[i]);
+    JsonArray soil = doc["soilReadingsLast"].to<JsonArray>();
+    for (int i = 0; i < 4; i++) soil.add(soilReadingsLast[i]);
     String json;
     serializeJson(doc, json);
     request->send(200, "application/json", json); });
