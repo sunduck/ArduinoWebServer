@@ -331,6 +331,9 @@ void setup()
   if (config.soilLogIntervalMin <= 0)
     config.soilLogIntervalMin = 15; // safety default
 
+  if (config.soilSensorCounter <= 0)
+    config.soilSensorCounter = 50; // safety default
+
   // Start soil humidity sensors logging task (pinned to core 1)
   BaseType_t result = xTaskCreatePinnedToCore(soilTask, "SoilTask", 4096, NULL, 1, NULL, 1);
   if (result != pdPASS) {
