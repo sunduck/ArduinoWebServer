@@ -1,12 +1,13 @@
 #include "ServerManager.h"
 #include "ConfigManager.h"
-#include "SoilLogManager.h"
+#include "LogManager.h"
 #include <WiFi.h>
 #include <ArduinoJson.h>
 #include <time.h>
 
 extern int lastSoilReadings[4];
 extern ConfigManager config;
+extern LogManager log;
 extern volatile bool pumpActive;
 
 // forward declarations from main.cpp
@@ -234,39 +235,28 @@ void setupServer()
     config.reset();
     request->send(200, "application/json", "{\"status\":\"reset\"}"); });
 
-  server.on("/logs", HTTP_GET, [](AsyncWebServerRequest *request)
-            {
+  
+  server.on("/logs", HTTP_GET, [](AsyncWebServerRequest *request) {
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
-
-    int idx = logIndex;
-    for (int i = 0; i < logCount; i++) {
-      idx = (idx - 1 + MAX_LOGS) % MAX_LOGS;
-      SoilLog &entry = soilLogs[idx];
-
+    int count = log.getEventCount();
+    for (int i = 0; i < count; i++) {
+      Event event = log.getEvent(i);
       JsonObject obj = arr.add<JsonObject>();
+      // Format timestamp as 'YYYY-MM-DD HH:MM:SS'
       char buf[25];
+      time_t t = event.timestamp / 1000; // convert ms to seconds
       struct tm timeinfo;
-      localtime_r(&entry.timestamp, &timeinfo);
+      localtime_r(&t, &timeinfo);
       strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &timeinfo);
       obj["timestamp"] = buf;
-
-      JsonArray vals = obj["values"].to<JsonArray>();
-      for (int j = 0; j < 4; j++) vals.add(entry.values[j]);
-
-      JsonArray wateringArr = obj["watering"].to<JsonArray>();
-      for (int j = 0; j < 4; j++) {
-        if (entry.watering[j]) {
-          JsonObject w = wateringArr.add<JsonObject>();
-          w["valve"] = j;
-          w["time"]  = entry.wateringTime[j];
-        }
-      }
+      obj["eventType"] = log.getEventTypeName(event.eventType);
+      obj["value"] = event.value;
     }
-
     String json;
     serializeJson(doc, json);
-    request->send(200, "application/json", json); });
+    request->send(200, "application/json", json);
+  });
 
   // sensors endpoint - mannualy reads soil sensors and returns current readings as JSON
   server.on("/sensors", HTTP_GET, [](AsyncWebServerRequest *request)

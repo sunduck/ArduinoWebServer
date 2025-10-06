@@ -7,11 +7,12 @@ Preferences preferences;
 
 ConfigManager::ConfigManager() {
   // Defaults (same as reset, but without saving to flash)
-  mode = "growing";
+  mode = "Grow";
   lightStart = 23;
   lightEnd = 17;
   sensorSettleTime = 300;
   soilLogIntervalMin = 15;
+  soilSensorCounter = 5;
   //wateringEnabled = true;
 
   setDefaultSchedules();
@@ -29,6 +30,7 @@ void ConfigManager::load() {
     lightEnd = preferences.getInt("lightEnd", 17);
     sensorSettleTime = preferences.getInt("snsTime", 300);
     soilLogIntervalMin = preferences.getInt("soilIntrvl", 15);
+    soilSensorCounter = preferences.getInt("soilSnsCnt", 5);
 
     wateringSchedules.clear();
     if (preferences.isKey("wSchdl")) {
@@ -74,6 +76,7 @@ void ConfigManager::save() {
   preferences.putInt("lightEnd", lightEnd);
   preferences.putInt("snsTime", sensorSettleTime);
   preferences.putInt("soilIntrvl", soilLogIntervalMin);
+  preferences.putInt("soilSnsCnt", soilSensorCounter);
 
   // Serialize wateringSchedules as JSON
   JsonDocument doc;
@@ -114,7 +117,7 @@ void ConfigManager::reset() {
 
 void ConfigManager::setDefaultSchedules() {
     wateringSchedules.clear();
-    wateringSchedules.push_back({"23:00", {60, 65, 68, 60}});
+    wateringSchedules.push_back({"23:00", {45, 45, 45, 45}});
     wateringSchedules.push_back({"05:00", {30, 35, 30, 30}});
     wateringSchedules.push_back({"11:00", {30, 35, 30, 30}});
 }

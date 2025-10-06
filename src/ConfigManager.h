@@ -1,12 +1,7 @@
 #pragma once
-
 #include <vector>       // make sure STL vector is seen first
 #include <Arduino.h>    // defines String and other Arduino types
 #include <Preferences.h>
-#pragma once
-#include <Arduino.h>
-#include <vector>
-#include <array>
 
 struct WateringSchedule {
     String time;                 // "HH:MM"
@@ -28,6 +23,7 @@ public:
     int lightEnd;
     int sensorSettleTime;
     int soilLogIntervalMin;
+    int soilSensorCounter; // amuont of readings to average per sensor
 
-    std::vector<WateringSchedule> wateringSchedules; // ✅ new
+    std::vector<WateringSchedule> wateringSchedules;
 };
