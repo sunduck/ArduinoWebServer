@@ -332,7 +332,7 @@ void setup()
     config.soilLogIntervalMin = 15; // safety default
 
   // Start soil humidity sensors logging task (pinned to core 1)
-  BaseType_t result = (soilTask, "SoilTask", 4096, NULL, 1, NULL, 1);
+  BaseType_t result = xTaskCreatePinnedToCore(soilTask, "SoilTask", 4096, NULL, 1, NULL, 1);
   if (result != pdPASS) {
     logDebug("Failed to create SoilTask!");
     ESP.restart();
