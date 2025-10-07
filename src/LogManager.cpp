@@ -11,7 +11,7 @@ void LogManager::addSoilEvent(uint8_t sensorId, int value)
   if (xSemaphoreTake(mutex, portMAX_DELAY))
   {
     Event event;
-    event.timestamp = millis();
+    event.timestamp = time(nullptr);
 
     switch (sensorId)
     {
@@ -42,7 +42,7 @@ void LogManager::addWaterEvent(uint8_t valveId, int durationSec)
   if (xSemaphoreTake(mutex, portMAX_DELAY))
   {
     Event event;
-    event.timestamp = millis();
+    event.timestamp = time(nullptr);
 
     switch (valveId)
     {

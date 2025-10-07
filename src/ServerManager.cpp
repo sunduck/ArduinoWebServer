@@ -9,7 +9,7 @@ extern uint16_t soilReadingsLast[4];
 extern uint16_t soilReadingsMax[4];
 extern uint16_t soilReadingsMin[4];
 extern ConfigManager config;
-extern LogManager log;
+extern LogManager logManager;
 extern volatile bool pumpActive;
 
 // forward declarations from main.cpp
@@ -67,12 +67,12 @@ void setupServer()
     doc["sensorSettleTime"] = config.sensorSettleTime;
     doc["soilLogIntervalMin"] = config.soilLogIntervalMin;
 
-    JsonArray soil = doc["soilHumidityLast"].to<JsonArray>();
-    for (int i = 0; i < 4; i++) soil.add(soilReadingsLast[i]);
-    JsonArray soil = doc["soilHumidityMax"].to<JsonArray>();
-    for (int i = 0; i < 4; i++) soil.add(soilReadingsMax[i]);
-    JsonArray soil = doc["soilHumidityMin"].to<JsonArray>();
-    for (int i = 0; i < 4; i++) soil.add(soilReadingsMin[i]);
+    JsonArray soilLast = doc["soilHumidityLast"].to<JsonArray>();
+    for (int i = 0; i < 4; i++) soilLast.add(soilReadingsLast[i]);
+    JsonArray soilMax = doc["soilHumidityMax"].to<JsonArray>();
+    for (int i = 0; i < 4; i++) soilMax.add(soilReadingsMax[i]);
+    JsonArray soilMin = doc["soilHumidityMin"].to<JsonArray>();
+    for (int i = 0; i < 4; i++) soilMin.add(soilReadingsMin[i]);
 
     time_t now = time(nullptr);
     struct tm timeinfo;
@@ -148,6 +148,7 @@ void setupServer()
         outDoc["lightEnd"] = config.lightEnd;
         outDoc["sensorSettleTime"] = config.sensorSettleTime;
         outDoc["soilLogIntervalMin"] = config.soilLogIntervalMin;
+        outDoc["soilSensorCounter"] = config.soilSensorCounter;
 
         JsonArray arr = outDoc["wateringSchedules"].to<JsonArray>();
         for (auto &ws : config.wateringSchedules) {
@@ -176,6 +177,7 @@ void setupServer()
         if (doc["lightEnd"].is<int>()) config.lightEnd = doc["lightEnd"].as<int>();
         if (doc["sensorSettleTime"].is<int>()) config.sensorSettleTime = doc["sensorSettleTime"].as<int>();
         if (doc["soilLogIntervalMin"].is<int>()) config.soilLogIntervalMin = doc["soilLogIntervalMin"].as<int>();
+        if (doc["soilSensorCounter"].is<int>()) config.soilSensorCounter = doc["soilSensorCounter"].as<int>();
 
         // --- Validate and apply watering schedules ---
         if (doc["wateringSchedules"].is<JsonArray>()) {
@@ -234,6 +236,7 @@ void setupServer()
         outDoc["lightEnd"] = config.lightEnd;
         outDoc["sensorSettleTime"] = config.sensorSettleTime;
         outDoc["soilLogIntervalMin"] = config.soilLogIntervalMin;
+        outDoc["soilSensorCounter"] = config.soilSensorCounter;
 
         JsonArray arr = outDoc["wateringSchedules"].to<JsonArray>();
         for (auto &ws : config.wateringSchedules) {
@@ -257,18 +260,19 @@ void setupServer()
             {
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
-    int count = log.getEventCount();
+  int count = logManager.getEventCount();
     for (int i = 0; i < count; i++) {
-      Event event = log.getEvent(i);
+  Event event = logManager.getEvent(i);
       JsonObject obj = arr.add<JsonObject>();
       // Format timestamp as 'YYYY-MM-DD HH:MM:SS'
       char buf[25];
-      time_t t = event.timestamp / 1000; // convert ms to seconds
+      time_t t = event.timestamp;
       struct tm timeinfo;
       localtime_r(&t, &timeinfo);
       strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &timeinfo);
       obj["timestamp"] = buf;
-      obj["eventType"] = log.getEventTypeName(event.eventType);
+      obj["timestamp"] = buf;
+      obj["eventType"] = logManager.getEventTypeName(event.eventType);
       obj["value"] = event.value;
     }
     String json;

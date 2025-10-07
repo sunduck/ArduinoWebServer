@@ -12,7 +12,7 @@ ConfigManager::ConfigManager() {
   lightEnd = 17;
   sensorSettleTime = 300;
   soilLogIntervalMin = 15;
-  soilSensorCounter = 5;
+  soilSensorCounter = 10;
   //wateringEnabled = true;
 
   setDefaultSchedules();
@@ -107,6 +107,8 @@ void ConfigManager::reset() {
   lightEnd = 17;
   sensorSettleTime = 300;
   soilLogIntervalMin = 15;
+  soilSensorCounter = 10;
+  
   //wateringEnabled = true;
 
   setDefaultSchedules();
@@ -117,7 +119,7 @@ void ConfigManager::reset() {
 
 void ConfigManager::setDefaultSchedules() {
     wateringSchedules.clear();
-    wateringSchedules.push_back({"23:00", {45, 45, 45, 45}});
-    wateringSchedules.push_back({"05:00", {30, 35, 30, 30}});
-    wateringSchedules.push_back({"11:00", {30, 35, 30, 30}});
+    wateringSchedules.push_back({"23:05", {45, 45, 45, 45}});
+    wateringSchedules.push_back({"05:05", {30, 35, 30, 30}});
+    wateringSchedules.push_back({"11:05", {30, 35, 30, 30}});
 }

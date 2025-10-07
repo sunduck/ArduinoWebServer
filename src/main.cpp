@@ -15,21 +15,21 @@
 // Idea of the system is to water 4 plants fixed amount of times per defined light cycle
 // and log soil moisture during light cycle and power only at the times we gather data
 // to prevent corrosion of soil sensors electrodes (full-time power will end them in a month).
-// 
+//
 // Amount of water per valve and watering times can be configured via web interface
-// by analyzing soil moisture logs and drainage volume. 
+// by analyzing soil moisture logs and drainage volume.
 // Later maybe going full automatic by soil moisture sensors only.
 //
 // Hardware: ESP32-S3 N16R8 - some cheap aliexpess knockoff board with 16MB flash, it works fine
 //           https://community.platformio.org/t/how-do-you-set-up-a-new-board-esp32-s3-n16r8
 //           4x5V resistive soil moisture sensors
-//           8x5v relay board (4 relays to power up soil sensors, for 12v membrane water pump), 
-//           4x12V relay board (for 4 12v water valves) 
+//           8x5v relay board (4 relays to power up soil sensors, for 12v membrane water pump),
+//           4x12V relay board (for 4 12v water valves)
 //
 //                                     !!! IMPORTANT !!!
-//           Don't forget to shunt those 12V valves with a diodes (1N4007 or similar) 
-// Otherwise EMI from discharging valve coil will corrupt your ESP32 flash on valve powering off! 
-//    (Seriously, i lost a lot of time to find this out, i slept on electrotechnics lectures)
+//           Don't forget to shunt those 12V valves with a diodes (1N4007 or similar)
+// Otherwise EMI from discharging valve coil will corrupt your ESP32 RAM on valve powering off!
+//    (Seriously, i lost a lot of time to find this out - i slept on electrotechnics lectures)
 //                                     !!!!!!!!!!!!!!!!!
 //
 // Control via REST on web interface, config stored in flash - it won't loose config on power loss
@@ -51,7 +51,7 @@ uint16_t soilReadingsMax[4] = {0, 0, 0, 0};
 
 AsyncWebServer server(80);
 ConfigManager config;
-LogManager log;
+LogManager logManager;
 volatile bool pumpActive = false; // guard: only one watering at a time
 
 String getTimestamp()
@@ -122,6 +122,31 @@ void setupNTP()
   logDebug("NTP sync successful, timestamped logging enabled");
 }
 
+void readSoilSensor(int sensorId)
+{
+  // powering up 5V sensor (active LOW)
+  digitalWrite(relay5vPins[sensorId], LOW);
+  // dalying to let sensor settle after powering up
+  delay(config.sensorSettleTime);
+
+  long sum = 0;
+  for (int j = 0; j < config.soilSensorCounter; j++)
+  {
+    // reading sensor multiple times and averaging
+    sum += analogRead(soilPins[sensorId]);
+    delay(50);
+  }
+  int value = sum / config.soilSensorCounter;
+  soilReadingsLast[sensorId] = value;
+  if (value < soilReadingsMin[sensorId])
+    soilReadingsMin[sensorId] = value;
+  if (value > soilReadingsMax[sensorId])
+    soilReadingsMax[sensorId] = value;
+  logManager.addSoilEvent(sensorId, value);
+  // powering down 5V sensor
+  digitalWrite(relay5vPins[sensorId], HIGH); // powering sensor off
+}
+
 // --- Soil sensors ---
 void readSoilSensors()
 {
@@ -139,37 +164,12 @@ void readSoilSensors()
   }
 }
 
-void readSoilSensor(int sensorId)
-{
-    // powering up 5V sensor (active LOW)
-    digitalWrite(relay5vPins[sensorId], LOW);
-    // dalying to let sensor settle after powering up
-    delay(config.sensorSettleTime);
-
-    long sum = 0;
-    for (int j = 0; j < config.soilSensorCounter; j++)
-    {
-      // reading sensor multiple times and averaging
-      sum += analogRead(soilPins[sensorId]);
-      delay(50);
-    }
-    int value = sum / config.soilSensorCounter;
-    soilReadingsLast[sensorId] = value;
-    if (value < soilReadingsMin[sensorId])
-      soilReadingsMin[sensorId] = value;
-    if (value > soilReadingsMax[sensorId])
-      soilReadingsMax[sensorId] = value;
-    log.addSoilEvent(sensorId, value);
-    // powering down 5V sensor
-    digitalWrite(relay5vPins[sensorId], HIGH); // powering sensor off
-}
-
 /*
 // Task scheduling soil moisture readings
 // during light cycle only (to prevent corrosion of soil sensors)
 // pinned to core 1 (not using WiFi functions)
-// uses config values: 
-// lightStart - start of the light cycle (it could start at night if you have night energy tatiffs) 
+// uses config values:
+// lightStart - start of the light cycle (it could start at night if you have night energy tatiffs)
 // lightEnd - end of the light cycle, it defines soil moisture logging period
 // soilLogIntervalMin - interval in minutes to log soil data (e.g. int(15) is for every 15th minute of the hour, starting with 0 minute)
 */
@@ -219,21 +219,23 @@ void wateringCycle(int duration0, int duration1, int duration2, int duration3)
   pumpActive = true;
 
   // Local fixed-size array — lives on the stack, fast and safe
-  int durations[4] = {duration0, duration1, duration2, duration3};
+  int* durations = new int[4];
+  durations[0] = duration0;
+  durations[1] = duration1;
+  durations[2] = duration2;
+  durations[3] = duration3;
 
   // Create a task; pass the array by *value* (copied into task stack)
   BaseType_t result = xTaskCreatePinnedToCore(
       [](void *param)
       {
-        // Copy the array contents immediately, since param points to stack memory
-        int localDurations[4];
-        memcpy(localDurations, param, sizeof(localDurations));
-
+        int* durations = (int*)param;
         for (int i = 0; i < 4; i++)
         {
-          int seconds = localDurations[i];
+          int seconds = durations[i];
           if (seconds > 0)
           {
+            //logDebug("Starting watering cycle for valve " + String(i) + " for " + String(seconds) + " seconds");
             // reading soil sensor before watering
             readSoilSensor(i);
 
@@ -246,22 +248,24 @@ void wateringCycle(int duration0, int duration1, int duration2, int duration3)
             digitalWrite(PUMP_RELAY_PIN, HIGH); // Pump OFF
             digitalWrite(relay12vPins[i], LOW); // Valve OFF
 
-            log.addWaterEvent(i, seconds);
+            //logDebug("Watering cycle for valve " + String(i) + " completed");
+
+            logManager.addWaterEvent(i, seconds);
 
             // Wait 3 seconds before next valve
             vTaskDelay(3000 / portTICK_PERIOD_MS);
           }
         }
-
+        delete[] durations; // Free memory after use
         pumpActive = false;
         vTaskDelete(NULL); // End task safely
       },
-      "WCycleTask",   // Task name
-      4096,           // Stack size (bytes)
-      durations,      // Parameter (copied in)
-      1,              // Priority
-      NULL,           // Task handle
-      1               // Core (optional)
+      "WCycleTask", // Task name
+      4096,         // Stack size (bytes)
+      durations,    // Parameter (copied in)
+      1,            // Priority
+      NULL,         // Task handle
+      1             // Core (optional)
   );
   if (result != pdPASS)
   {
@@ -346,14 +350,16 @@ void setup()
 
   // Start soil humidity sensors logging task (pinned to core 1)
   BaseType_t result = xTaskCreatePinnedToCore(soilTask, "SoilTask", 4096, NULL, 1, NULL, 1);
-  if (result != pdPASS) {
+  if (result != pdPASS)
+  {
     logDebug("Failed to create SoilTask!");
     ESP.restart();
   }
 
   // Start watering scheduler task (pinned to core 1)
-  BaseType_t result = xTaskCreatePinnedToCore(wateringSchedulerTask, "WSchedulerTask", 4096, NULL, 1, NULL, 1);
-  if (result != pdPASS) {
+  result = xTaskCreatePinnedToCore(wateringSchedulerTask, "WSchedulerTask", 4096, NULL, 1, NULL, 1);
+  if (result != pdPASS)
+  {
     logDebug("Failed to create WSchedulerTask!");
     ESP.restart();
   }
